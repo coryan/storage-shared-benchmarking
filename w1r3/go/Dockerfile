@@ -4,7 +4,7 @@
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
 #
-#      http://www.apache.org/licenses/LICENSE-2.0
+#     https://www.apache.org/licenses/LICENSE-2.0
 #
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS,
@@ -12,29 +12,17 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-terraform {
-  required_providers {
-    google = {
-      source  = "hashicorp/google"
-      version = "~> 5.21.0"
-    }
-  }
-}
+FROM golang:1.22 AS build
 
-provider "google" {
-  project = var.project
-  region  = var.region
-  zone    = var.zone
-}
+WORKDIR /var/tmp/build/w1r3
+COPY go.mod go.sum /var/tmp/build/w1r3/
+RUN go mod download
+COPY main.go /var/tmp/build/w1r3/
+RUN go build
 
-# Create the metric descriptors used by the benchmark.
-module "metrics" {
-  source = "./metrics"
-}
+FROM golang:1.22 AS deploy
 
-# Create the triggers used by the benchmark.
-module "triggers" {
-  source  = "./triggers"
-  project = var.project
-  region  = var.region
-}
+RUN apt update && \
+    apt install -y ca-certificates
+
+COPY --from=build /var/tmp/build/w1r3/w1r3 /r/w1r3

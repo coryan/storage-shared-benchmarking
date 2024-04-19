@@ -4,7 +4,7 @@
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
 #
-#      http://www.apache.org/licenses/LICENSE-2.0
+#     https://www.apache.org/licenses/LICENSE-2.0
 #
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS,
@@ -12,29 +12,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-terraform {
-  required_providers {
-    google = {
-      source  = "hashicorp/google"
-      version = "~> 5.21.0"
-    }
-  }
-}
+substitutions:
+  _TAG: "latest"
 
-provider "google" {
-  project = var.project
-  region  = var.region
-  zone    = var.zone
-}
-
-# Create the metric descriptors used by the benchmark.
-module "metrics" {
-  source = "./metrics"
-}
-
-# Create the triggers used by the benchmark.
-module "triggers" {
-  source  = "./triggers"
-  project = var.project
-  region  = var.region
-}
+steps:
+- name: 'gcr.io/kaniko-project/executor:v1.21.1'
+  args: [
+    '--log-format=text',
+    '--cache=true',
+    '--destination=gcr.io/${PROJECT_ID}/w1r3/go:${_TAG}',
+    '--image-fs-extract-retry=3',
+    '--image-download-retry=3',
+    '--push-retry=3'
+  ]
