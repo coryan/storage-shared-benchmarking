@@ -47,3 +47,9 @@ variable "app_version_go" {
 variable "app_version_java" {
   default = "v1"
 }
+
+# use `-var=app_version_python=v2` to redeploy when the changes do not trigger
+# a terraform change. See mig/python/main.tf for details.
+variable "app_version_python" {
+  default = "v1"
+}

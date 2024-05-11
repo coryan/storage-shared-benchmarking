@@ -24,8 +24,8 @@ variable "region" {
     type = string
 }
 
-variable "zone" {
-    type = string
+variable "replicas" {
+  type = number
 }
 
 variable "service_account" {
@@ -69,26 +69,31 @@ resource "google_compute_instance_template" "default" {
 users:
 - name: cloudservice
   uid: 2000
-  
+
 write_files:
-- path: /etc/systemd/system/w1r3.service
+- path: /etc/systemd/system/w1r3@.service
   permissions: 0644
   owner: root
   content: |
     [Unit]
-    Description=Start the w1r3 runner
+    Description=The Python w1r3 continuous benchmark instance %I
+    StartLimitIntervalSec=300
+    StartLimitBurst=3
 
     [Service]
+    Restart=always
+    RestartSec=1s
+
     Environment="HOME=/home/cloudservice"
     ExecStartPre=/usr/bin/docker-credential-gcr configure-docker ; /usr/bin/docker pull gcr.io/${var.project}/w1r3/cpp:latest
-    ExecStart=/usr/bin/docker run --rm -u 2000 --name=w1r3-python gcr.io/${var.project}/w1r3/python:latest python /r/w1r3.py --project-id=${var.project} --bucket=${var.bucket} --iterations=${local.iterations} --deployment=mig
-    ExecStop=/usr/bin/docker stop w1r3-python
-    ExecStopPost=/usr/bin/docker rm w1r3-python
+    ExecStart=/usr/bin/docker run --rm -u 2000 --name=w1r3-python-%i gcr.io/${var.project}/w1r3/python:latest python /r/w1r3.py --project-id=${var.project} --bucket=${var.bucket} --iterations=${local.iterations} --deployment=mig
+    ExecStop=/usr/bin/docker stop w1r3-python-%i
+    ExecStopPost=/usr/bin/docker rm w1r3-python-%i
 
 runcmd:
 - docker-credential-gcr configure-docker
 - systemctl daemon-reload
-- systemctl start w1r3.service
+- for i in $(seq 1 ${local.cpus}); do systemctl start w1r3@$${i}.service; done
 EOF
   }
   network_interface {
@@ -123,10 +128,10 @@ resource "google_compute_region_instance_group_manager" "default" {
     name              = "primary"
   }
   base_instance_name = local.base_instance_name
-  target_size        = 3
+  target_size        = var.replicas
 
   # NOTE: the name of this resource must be unique for every update;
-  #       this is wy we have a app_version in the name; this way
+  #       this is why we have a app_version in the name; this way
   #       new resource has a different name vs old one and both can
   #       exists at the same time
   lifecycle {
