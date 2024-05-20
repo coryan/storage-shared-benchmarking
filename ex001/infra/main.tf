@@ -102,16 +102,16 @@ module "sa" {
     google_storage_bucket.o128.name
   ]
 }
-# 
-# module "ex001-o128-cpp" {
-# source          = "./mig/cpp"
-# project         = var.project
-# bucket          = google_storage_bucket.o128.name
-# object_size     = 128 * 1024 * 1024
-# region          = var.region
-# replicas        = var.replicas
-# service_account = module.mig-sa.email
-# app_version     = var.app_version_cpp
-# depends_on      = [module.mig-sa]
-# }
-# 
+
+module "ex001-cpp" {
+  source          = "./cpp"
+  project         = var.project
+  experiment      = var.experiment
+  bucket          = google_storage_bucket.o128.name
+  object-size     = 128 * 1024 * 1024
+  region          = var.region
+  replicas        = var.replicas
+  service_account = module.sa.email
+  app_version     = var.app_version_cpp
+  depends_on      = [module.sa]
+}

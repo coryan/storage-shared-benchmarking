@@ -125,6 +125,17 @@ auto get_transports(boost::program_options::variables_map const& vm) {
   return vm["transports"].as<std::vector<std::string>>();
 }
 
+auto get_uploaders(boost::program_options::variables_map const& vm) {
+  auto const l = vm.find("uploaders");
+  if (l == vm.end()) {
+    return std::vector<std::string>{
+        std::string(kSingleShot),
+        std::string(kResumable),
+    };
+  }
+  return vm["uploaders"].as<std::vector<std::string>>();
+}
+
 std::map<std::string, google::cloud::storage::Client> make_clients(
     boost::program_options::variables_map const& vm);
 
@@ -187,6 +198,7 @@ int main(int argc, char* argv[]) try {
   auto const bucket_name = vm["bucket"].as<std::string>();
   auto const object_sizes = get_object_sizes(vm);
   auto const transports = get_transports(vm);
+  auto const uploaders = get_uploaders(vm);
   auto const deployment = vm["deployment"].as<std::string>();
 
   auto join = [](auto collection) {
@@ -207,6 +219,7 @@ int main(int argc, char* argv[]) try {
   std::cout << "## Starting continuous GCS C++ SDK benchmark"              //
             << "\n# object-sizes: " << join(object_sizes)                  //
             << "\n# transports: " << join(transports)                      //
+            << "\n# uploaders: " << join(uploaders)                        //
             << "\n# project-id: " << project                               //
             << "\n# bucket: " << bucket_name                               //
             << "\n# deployment: " << deployment                            //
@@ -504,11 +517,18 @@ auto write_object(gc::storage::Client& client, std::string const& bucket_name,
 }
 
 std::map<std::string, uploader_function> make_uploaders(
-    boost::program_options::variables_map const&) {
-  return std::map<std::string, uploader_function>{
-      {std::string(kSingleShot), insert_object},
-      {std::string(kResumable), write_object},
-  };
+    boost::program_options::variables_map const& vm) {
+  std::map<std::string, uploader_function> uploaders;
+  for (auto const& name : get_uploaders(vm)) {
+    if (name == kSingleShot) {
+      uploaders.emplace(name, insert_object);
+    } else if (name == kResumable) {
+      uploaders.emplace(name, write_object);
+    } else {
+      throw std::runtime_error("unknown uploader name " + name);
+    }
+  }
+  return uploaders;
 }
 
 auto make_resource(std::string const& instance) {
@@ -676,8 +696,12 @@ boost::program_options::variables_map parse_args(int argc, char* argv[]) {
        "the object sizes used in the benchmark.")  //
       ("transports", po::value<std::vector<std::string>>()->multitoken(),
        "the transports used in the benchmark.")  //
+      ("uploaders", po::value<std::vector<std::string>>()->multitoken(),
+       "the uploaders used in the benchmark.")  //
       ("workers", po::value<int>()->default_value(1),
        "the number of worker threads.")  //
+      ("read-count", po::value<int>()->default_value(3),
+       "the number of read calls")  //
       // Open Telemetry Processor options
       ("project-id", po::value<std::string>()->required(),
        "a Google Cloud Project id. The benchmark sends its results to this"
