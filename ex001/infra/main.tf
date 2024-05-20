@@ -92,13 +92,16 @@ resource "google_storage_bucket" "o128" {
   }
 }
 
-# module "mig-sa" {
-# source  = "./mig/service-account"
-# project = var.project
-# b0  = google_storage_bucket.o0.name
-# b16  = google_storage_bucket.o16.name
-# b128  = google_storage_bucket.o128.name
-# }
+module "sa" {
+  source     = "./service-account"
+  project    = var.project
+  experiment = var.experiment
+  buckets = [
+    google_storage_bucket.o0.name,
+    google_storage_bucket.o16.name,
+    google_storage_bucket.o128.name
+  ]
+}
 # 
 # module "ex001-o128-cpp" {
 # source          = "./mig/cpp"
