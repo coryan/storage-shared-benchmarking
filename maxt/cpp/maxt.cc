@@ -260,7 +260,7 @@ namespace {
 
 std::vector<int> get_worker_counts(
     boost::program_options::variables_map const& vm) {
-  auto const l = vm.find("object-counts");
+  auto const l = vm.find("worker-counts");
   if (l != vm.end()) return l->second.as<std::vector<int>>();
   return {16, 32, 64};
 }
@@ -689,6 +689,8 @@ boost::program_options::variables_map parse_args(int argc, char* argv[]) {
        "the duration of each iteration")  //
       ("worker-counts", po::value<std::vector<int>>()->multitoken(),
        "the object sizes used in the benchmark.")  //
+      ("object-counts", po::value<std::vector<int>>()->multitoken(),
+       "the object counts used in the benchmark.")  //
       ("object-sizes", po::value<std::vector<std::int64_t>>()->multitoken(),
        "the object sizes used in the benchmark.")  //
       ("experiments", po::value<std::vector<std::string>>()->multitoken(),
