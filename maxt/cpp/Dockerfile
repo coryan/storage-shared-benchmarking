@@ -62,12 +62,11 @@ RUN apk update && \
 # Update the ld.conf cache in case any libraries were installed in /usr/local/lib*
 RUN ldconfig /usr/local/lib*
 
-WORKDIR /var/tmp/build/w1r3
-COPY CMakeLists.txt w1r3.cc /var/tmp/build/w1r3/
-RUN cmake -G Ninja -S . -B .build -DCMAKE_BUILD_TYPE=Release && \
+WORKDIR /var/tmp/build/maxt
+COPY .git/ /var/tmp/build/maxt/.git
+COPY maxt/ /var/tmp/build/maxt/maxt
+RUN cmake -G Ninja -S maxt/cpp -B .build -DCMAKE_BUILD_TYPE=Release && \
     cmake --build .build
-
-# RUN ldd .build/w1r3 && false
 
 FROM alpine:3.20 AS deploy
 
@@ -75,6 +74,4 @@ RUN apk update && \
     apk add bash ca-certificates grpc-cpp libprotobuf \
             boost1.84-program_options libcurl crc32c
 
-COPY --from=build /var/tmp/build/w1r3/.build/w1r3 /r/w1r3
-
-RUN ldd /r/w1r3
+COPY --from=build /var/tmp/build/maxt/.build/maxt /r/maxt
