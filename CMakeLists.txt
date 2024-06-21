@@ -18,3 +18,4 @@ cmake_minimum_required(VERSION 3.24...3.28)
 project(continuous-benchmark CXX)
 
 add_subdirectory(w1r3/cpp)
+add_subdirectory(maxt/cpp)
