@@ -21,6 +21,7 @@
 #include <google/cloud/project.h>
 #include <google/cloud/storage/async/client.h>
 #include <google/cloud/storage/client.h>
+#include <google/cloud/storage/grpc_plugin.h>
 #include <google/cloud/storage/options.h>
 #include <google/cloud/version.h>
 #include <boost/lexical_cast.hpp>
@@ -75,10 +76,16 @@ auto constexpr kMiB = kKiB * kKiB;
 auto constexpr kRandomDataSize = 32 * kMiB;
 
 auto constexpr kAppName = "maxt"sv;
+
 auto constexpr kLatencyHistogramName = "ssb/maxt/latency";
 auto constexpr kLatencyDescription =
     "Operation latency as measured by the benchmark.";
 auto constexpr kLatencyHistogramUnit = "s";
+
+auto constexpr kThroughputHistogramName = "ssb/maxt/throughput";
+auto constexpr kThroughputDescription =
+    "Aggregate throughput latency as measured by the benchmark.";
+auto constexpr kThroughputHistogramUnit = "b/s";
 
 auto constexpr kCpuHistogramName = "ssb/maxt/cpu";
 auto constexpr kCpuDescription =
@@ -107,6 +114,8 @@ std::vector<int> get_object_counts(
     boost::program_options::variables_map const& vm);
 std::vector<std::int64_t> get_object_sizes(
     boost::program_options::variables_map const& vm);
+std::vector<std::string> get_experiments(
+    boost::program_options::variables_map const& vm);
 
 using histogram_ptr =
     opentelemetry::nostd::shared_ptr<opentelemetry::metrics::Histogram<double>>;
@@ -122,6 +131,7 @@ struct config {
   int iterations;
   std::chrono::seconds iteration_time;
   histogram_ptr latency;
+  histogram_ptr throughput;
   histogram_ptr cpu;
   histogram_ptr memory;
 };
@@ -203,6 +213,7 @@ int main(int argc, char* argv[]) try {
             << "\n# worker-counts: " << join(get_worker_counts(vm))        //
             << "\n# object-counts: " << join(get_object_counts(vm))        //
             << "\n# object-sizes: " << join(get_object_sizes(vm))          //
+            << "\n# experiments: " << join(get_experiments(vm))            //
             << "\n# instance: " << instance                                //
             << "\n# tracing-rate: " << tracing_rate                        //
             << "\n# Version: " << SSB_VERSION                              //
@@ -225,6 +236,9 @@ int main(int argc, char* argv[]) try {
   auto meter = provider->GetMeter(std::string{kAppName}, kVersion, kSchema);
   histogram_ptr latency = meter->CreateDoubleHistogram(
       kLatencyHistogramName, kLatencyDescription, kLatencyHistogramUnit);
+  histogram_ptr throughput = meter->CreateDoubleHistogram(
+      kThroughputHistogramName, kThroughputDescription,
+      kThroughputHistogramUnit);
   histogram_ptr cpu = meter->CreateDoubleHistogram(
       kCpuHistogramName, kCpuDescription, kCpuHistogramUnit);
   histogram_ptr memory = meter->CreateDoubleHistogram(
@@ -241,6 +255,7 @@ int main(int argc, char* argv[]) try {
       .iterations = vm["iterations"].as<int>(),
       .iteration_time = std::chrono::seconds(vm["iteration-seconds"].as<int>()),
       .latency = std::move(latency),
+      .throughput = std::move(throughput),
       .cpu = std::move(cpu),
       .memory = std::move(memory),
   };
@@ -262,21 +277,21 @@ std::vector<int> get_worker_counts(
     boost::program_options::variables_map const& vm) {
   auto const l = vm.find("worker-counts");
   if (l != vm.end()) return l->second.as<std::vector<int>>();
-  return {16, 32, 64};
+  return {2 * static_cast<int>(std::thread::hardware_concurrency())};
 }
 
 std::vector<int> get_object_counts(
     boost::program_options::variables_map const& vm) {
   auto const l = vm.find("object-counts");
   if (l != vm.end()) return l->second.as<std::vector<int>>();
-  return {16, 32, 64};
+  return {2 * static_cast<int>(std::thread::hardware_concurrency())};
 }
 
 std::vector<std::int64_t> get_object_sizes(
     boost::program_options::variables_map const& vm) {
   auto const l = vm.find("object-sizes");
   if (l != vm.end()) return l->second.as<std::vector<std::int64_t>>();
-  return {1024 * kMiB};
+  return {256 * kMiB};
 }
 
 template <typename Collection>
@@ -301,24 +316,35 @@ class usage {
         clock_(std::chrono::steady_clock::now()),
         cpu_(cpu_now()) {}
 
-  void record(config const& cfg, std::uint64_t object_size, auto span,
+  void record(config const& cfg, std::uint64_t bytes, auto span,
               auto attributes) const {
     auto const cpu_usage = cpu_now() - cpu_;
     auto const elapsed = std::chrono::steady_clock::now() - clock_;
     auto const mem_usage = mem_now() - mem_;
 
-    auto scale = [object_size](auto value) {
-      if (object_size == 0) return static_cast<double>(value);
-      return static_cast<double>(value) / static_cast<double>(object_size);
+    auto per_byte = [bytes](auto value) {
+      if (bytes == 0) return static_cast<double>(value);
+      return static_cast<double>(value) / static_cast<double>(bytes);
     };
+    auto throughput = [bytes](auto value) {
+      if (std::abs(value) < std::numeric_limits<double>::epsilon()) {
+        return static_cast<double>(0.0);
+      }
+      return static_cast<double>(bytes * 8) / static_cast<double>(value);
+    };
+
+    std::cout << "TP: " << throughput(std::chrono::duration_cast<dseconds>(elapsed).count()) << std::endl;
 
     cfg.latency->Record(
         std::chrono::duration_cast<dseconds>(elapsed).count(), attributes,
         opentelemetry::context::Context{}.SetValue("span", span));
-    cfg.cpu->Record(scale(cpu_usage.count()), attributes,
+    cfg.throughput->Record(
+        throughput(std::chrono::duration_cast<dseconds>(elapsed).count()),
+        attributes, opentelemetry::context::Context{}.SetValue("span", span));
+    cfg.cpu->Record(per_byte(cpu_usage.count()), attributes,
                     opentelemetry::context::Context{}.SetValue("span", span));
     cfg.memory->Record(
-        scale(mem_usage), attributes,
+        per_byte(mem_usage), attributes,
         opentelemetry::context::Context{}.SetValue("span", span));
     span->End();
   }
@@ -415,11 +441,11 @@ void run(config cfg, named_experiments experiments) {
       auto iteration_span = tracer->StartSpan(
           "ssb::maxt::iteration",
           opentelemetry::common::MakeAttributes(common_attributes));
-      auto iteration = tracer->WithActiveSpan(iteration_span);
+      // auto iteration = tracer->WithActiveSpan(iteration_span);
       auto const t = usage();
       runner->run(cfg.bucket_name, worker_count, object_size, object_names,
                   data);
-      t.record(cfg, object_size, iteration_span,
+      t.record(cfg, object_size * object_names.size(), iteration_span,
                as_attributes(common_attributes));
     }
 
@@ -508,11 +534,50 @@ class sync_download : public experiment {
   gc::storage::Client client_;
 };
 
+auto options() {
+  return gc::Options{}
+      .set<gc::storage::UploadBufferSizeOption>(256 * kKiB)
+      .set<gc::OpenTelemetryTracingOption>(true);
+}
+
+auto make_json() { return gc::storage::Client(options()); }
+
+auto make_grpc() {
+  return gc::storage_experimental::DefaultGrpcClient(options());
+}
+
+auto make_dp() {
+  return gc::storage_experimental::DefaultGrpcClient(
+      options().set<gc::EndpointOption>(
+          "google-c2p:///storage.googleapis.com"));
+}
+
+auto constexpr kJsonDownloads = "JSON+DOWNLOADS"sv;
+auto constexpr kGrpcCfeDownloads = "GRPC+CFE+DOWNLOADS"sv;
+auto constexpr kGrpcDpDownloads = "GRPC+DP+DOWNLOADS"sv;
+
+std::vector<std::string> get_experiments(
+    boost::program_options::variables_map const& vm) {
+  auto const l = vm.find("experiments");
+  if (l != vm.end()) return l->second.as<std::vector<std::string>>();
+  return {std::string(kJsonDownloads), std::string(kGrpcCfeDownloads)};
+}
+
 named_experiments make_experiments(
     boost::program_options::variables_map const& vm) {
-  return named_experiments{
-      {"JSON+DOWNLOADS", std::make_shared<sync_download>(gc::storage::Client())},
-  };
+  named_experiments ne;
+  for (auto const& name : get_experiments(vm)) {
+    if (name == kJsonDownloads) {
+      ne.emplace(name, std::make_shared<sync_download>(make_json()));
+    } else if (name == kGrpcCfeDownloads) {
+      ne.emplace(name, std::make_shared<sync_download>(make_grpc()));
+    } else if (name == kGrpcDpDownloads) {
+      ne.emplace(name, std::make_shared<sync_download>(make_dp()));
+    } else {
+      throw std::invalid_argument("Unknown experiment name: " + name);
+    }
+  }
+  return ne;
 }
 
 std::string discover_region() {
@@ -551,23 +616,26 @@ auto make_latency_histogram_boundaries() {
   // to choose them carefully.
   std::vector<double> boundaries;
   auto boundary = 0ms;
-  auto increment = 2ms;
-  // For the first 100ms use 2ms buckets. We need higher resolution in this
-  // area for 100KB uploads and downloads.
-  for (int i = 0; i != 50; ++i) {
-    boundaries.push_back(
-        std::chrono::duration_cast<dseconds>(boundary).count());
-    boundary += increment;
-  }
-  // The remaining buckets are 10ms wide, and then 20ms, and so forth. We stop
-  // at 300,000ms (5 minutes) because any latency over that is too high for this
-  // benchmark.
-  boundary = 100ms;
-  increment = 10ms;
-  for (int i = 0; i != 150 && boundary <= 300s; ++i) {
+  auto increment = 100ms;
+  for (int i = 0; boundaries.size() != 200; ++i) {
     boundaries.push_back(
         std::chrono::duration_cast<dseconds>(boundary).count());
     if (i != 0 && i % 10 == 0) increment *= 2;
+    boundary += increment;
+  }
+  return boundaries;
+}
+
+auto make_throughput_histogram_boundaries() {
+  // Cloud Monitoring only supports up to 200 buckets per histogram, we have
+  // to choose them carefully.
+  std::vector<double> boundaries;
+  // The units are bits/s, use 2 Gpbs intervals, as some VMs support 100 Gbps,
+  // and that number can only go up.
+  auto boundary = 0.0;
+  auto increment = 2'000'000'000.0;
+  for (int i = 0; i != 200; ++i) {
+    boundaries.push_back(boundary);
     boundary += increment;
   }
   return boundaries;
@@ -661,6 +729,9 @@ std::unique_ptr<opentelemetry::metrics::MeterProvider> make_meter_provider(
   add_histogram_view(p, kLatencyHistogramName, kLatencyDescription,
                      kLatencyHistogramUnit,
                      make_latency_histogram_boundaries());
+  add_histogram_view(p, kThroughputHistogramName, kThroughputDescription,
+                     kThroughputHistogramUnit,
+                     make_throughput_histogram_boundaries());
   add_histogram_view(p, kCpuHistogramName, kCpuDescription, kCpuHistogramUnit,
                      make_cpu_histogram_boundaries());
   add_histogram_view(p, kMemoryHistogramName, kMemoryDescription,
