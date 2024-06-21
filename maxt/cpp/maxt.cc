@@ -201,29 +201,6 @@ int main(int argc, char* argv[]) try {
                              return a;
                            });
   };
-  // Using the `internal` namespace is frowned upon. The C++ SDK team may change
-  // the types and functions in this namespace at any time. If this ever breaks
-  // we will find out at compile time, and will need to detect the compiler and
-  // build flags ourselves.
-  namespace gci = ::google::cloud::internal;
-  std::cout << "## Starting continuous GCS C++ SDK benchmark"              //
-            << "\n# project-id: " << project                               //
-            << "\n# bucket: " << bucket_name                               //
-            << "\n# deployment: " << deployment                            //
-            << "\n# worker-counts: " << join(get_worker_counts(vm))        //
-            << "\n# object-counts: " << join(get_object_counts(vm))        //
-            << "\n# object-sizes: " << join(get_object_sizes(vm))          //
-            << "\n# experiments: " << join(get_experiments(vm))            //
-            << "\n# instance: " << instance                                //
-            << "\n# tracing-rate: " << tracing_rate                        //
-            << "\n# Version: " << SSB_VERSION                              //
-            << "\n# C++ SDK version: " << gc::version_string()             //
-            << "\n# C++ SDK Compiler: " << gci::CompilerId()               //
-            << "\n# C++ SDK Compiler Version: " << gci::CompilerVersion()  //
-            << "\n# C++ SDK Compiler Flags: " << gci::compiler_flags()     //
-            << "\n# gRPC version: " << grpc::Version()                     //
-            << "\n# Protobuf version: " << SSB_PROTOBUF_VERSION            //
-            << std::endl;                                                  //
 
   auto const tracing = gc::otel::ConfigureBasicTracing(
       project,
@@ -259,6 +236,32 @@ int main(int argc, char* argv[]) try {
       .cpu = std::move(cpu),
       .memory = std::move(memory),
   };
+
+  // Using the `internal` namespace is frowned upon. The C++ SDK team may change
+  // the types and functions in this namespace at any time. If this ever breaks
+  // we will find out at compile time, and will need to detect the compiler and
+  // build flags ourselves.
+  namespace gci = ::google::cloud::internal;
+  std::cout << "## Starting continuous GCS C++ SDK benchmark"              //
+            << "\n# project-id: " << project                               //
+            << "\n# bucket: " << cfg.bucket_name                           //
+            << "\n# deployment: " << cfg.deployment                        //
+            << "\n# instance: " << cfg.instance                            //
+            << "\n# region: " << cfg.region                                //
+            << "\n# worker-counts: " << join(cfg.worker_counts)            //
+            << "\n# object-counts: " << join(cfg.object_counts)            //
+            << "\n# object-sizes: " << join(cfg.object_sizes)              //
+            << "\n# experiments: " << join(get_experiments(vm))            //
+            << "\n# iterations: " << cfg.iterations                        //
+            << "\n# iteration-seconds: " << cfg.iteration_time.count()     //
+            << "\n# Version: " << SSB_VERSION                              //
+            << "\n# C++ SDK version: " << gc::version_string()             //
+            << "\n# C++ SDK Compiler: " << gci::CompilerId()               //
+            << "\n# C++ SDK Compiler Version: " << gci::CompilerVersion()  //
+            << "\n# C++ SDK Compiler Flags: " << gci::compiler_flags()     //
+            << "\n# gRPC version: " << grpc::Version()                     //
+            << "\n# Protobuf version: " << SSB_PROTOBUF_VERSION            //
+            << std::endl;                                                  //
 
   run(cfg, make_experiments(vm));
 
@@ -333,7 +336,10 @@ class usage {
       return static_cast<double>(bytes * 8) / static_cast<double>(value);
     };
 
-    std::cout << "TP: " << throughput(std::chrono::duration_cast<dseconds>(elapsed).count()) << std::endl;
+    std::cout << "TP: "
+              << throughput(
+                     std::chrono::duration_cast<dseconds>(elapsed).count())
+              << std::endl;
 
     cfg.latency->Record(
         std::chrono::duration_cast<dseconds>(elapsed).count(), attributes,
