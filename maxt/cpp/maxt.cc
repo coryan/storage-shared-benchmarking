@@ -108,29 +108,19 @@ using dseconds = std::chrono::duration<double, std::ratio<1>>;
 
 boost::program_options::variables_map parse_args(int argc, char* argv[]);
 
-std::vector<int> get_worker_counts(
-    boost::program_options::variables_map const& vm);
-std::vector<int> get_object_counts(
-    boost::program_options::variables_map const& vm);
-std::vector<std::int64_t> get_object_sizes(
-    boost::program_options::variables_map const& vm);
-std::vector<std::string> get_experiments(
-    boost::program_options::variables_map const& vm);
-
 using histogram_ptr =
     opentelemetry::nostd::shared_ptr<opentelemetry::metrics::Histogram<double>>;
 
 struct config {
-  std::vector<std::int64_t> object_sizes;
-  std::vector<int> worker_counts;
-  std::vector<int> object_counts;
-  std::vector<int> repeated_read_counts;
   std::string bucket_name;
   std::string deployment;
   std::string instance;
   std::string region;
   int iterations;
-  std::chrono::seconds iteration_time;
+  std::vector<std::int64_t> object_sizes;
+  std::vector<int> worker_counts;
+  std::vector<int> object_counts;
+  std::vector<int> repeated_read_counts;
   histogram_ptr latency;
   histogram_ptr throughput;
   histogram_ptr cpu;
@@ -236,16 +226,15 @@ int main(int argc, char* argv[]) try {
       kMemoryHistogramName, kMemoryDescription, kMemoryHistogramUnit);
 
   auto cfg = config{
-      .object_sizes = get_object_sizes(vm),
-      .worker_counts = get_worker_counts(vm),
-      .object_counts = get_object_counts(vm),
-      .repeated_read_counts = vm["repeated-read-counts"].as<std::vector<int>>(),
       .bucket_name = std::move(bucket_name),
       .deployment = deployment,
       .instance = instance,
       .region = discover_region(),
       .iterations = vm["iterations"].as<int>(),
-      .iteration_time = std::chrono::seconds(vm["iteration-seconds"].as<int>()),
+      .object_sizes = vm["object-sizes"].as<std::vector<std::int64_t>>(),
+      .worker_counts = vm["worker-counts"].as<std::vector<int>>(),
+      .object_counts = vm["object-counts"].as<std::vector<int>>(),
+      .repeated_read_counts = vm["repeated-read-counts"].as<std::vector<int>>(),
       .latency = std::move(latency),
       .throughput = std::move(throughput),
       .cpu = std::move(cpu),
@@ -258,17 +247,18 @@ int main(int argc, char* argv[]) try {
   // build flags ourselves.
   namespace gci = ::google::cloud::internal;
   std::cout << "## Starting continuous GCS C++ SDK benchmark"              //
-            << "\n# project-id: " << project                               //
             << "\n# bucket: " << cfg.bucket_name                           //
             << "\n# deployment: " << cfg.deployment                        //
             << "\n# instance: " << cfg.instance                            //
             << "\n# region: " << cfg.region                                //
+            << "\n# iterations: " << cfg.iterations                        //
+            << "\n# object-sizes: " << join(cfg.object_sizes)              //
             << "\n# worker-counts: " << join(cfg.worker_counts)            //
             << "\n# object-counts: " << join(cfg.object_counts)            //
-            << "\n# object-sizes: " << join(cfg.object_sizes)              //
-            << "\n# experiments: " << join(get_experiments(vm))            //
-            << "\n# iterations: " << cfg.iterations                        //
-            << "\n# iteration-seconds: " << cfg.iteration_time.count()     //
+            << "\n# repeated-read-counts-counts: "                         //
+            << join(cfg.repeated_read_counts)                              //
+            << "\n# experiments: "                                         //
+            << join(vm["experiments"].as<std::vector<std::string>>())      //
             << "\n# Version: " << SSB_VERSION                              //
             << "\n# C++ SDK version: " << gc::version_string()             //
             << "\n# C++ SDK Compiler: " << gci::CompilerId()               //
@@ -276,6 +266,8 @@ int main(int argc, char* argv[]) try {
             << "\n# C++ SDK Compiler Flags: " << gci::compiler_flags()     //
             << "\n# gRPC version: " << grpc::Version()                     //
             << "\n# Protobuf version: " << SSB_PROTOBUF_VERSION            //
+            << "\n# project-id: " << project                               //
+            << "\n# tracing-rate: " << vm["tracing-rate"].as<double>()     //
             << std::endl;                                                  //
 
   run(cfg, make_experiments(vm));
@@ -290,27 +282,6 @@ int main(int argc, char* argv[]) try {
 }
 
 namespace {
-
-std::vector<int> get_worker_counts(
-    boost::program_options::variables_map const& vm) {
-  auto const l = vm.find("worker-counts");
-  if (l != vm.end()) return l->second.as<std::vector<int>>();
-  return {2 * static_cast<int>(std::thread::hardware_concurrency())};
-}
-
-std::vector<int> get_object_counts(
-    boost::program_options::variables_map const& vm) {
-  auto const l = vm.find("object-counts");
-  if (l != vm.end()) return l->second.as<std::vector<int>>();
-  return {2 * static_cast<int>(std::thread::hardware_concurrency())};
-}
-
-std::vector<std::int64_t> get_object_sizes(
-    boost::program_options::variables_map const& vm) {
-  auto const l = vm.find("object-sizes");
-  if (l != vm.end()) return l->second.as<std::vector<std::int64_t>>();
-  return {256 * kMiB};
-}
 
 template <typename Collection>
 auto pick_one(std::mt19937_64& generator, Collection const& collection) {
@@ -334,8 +305,8 @@ class usage {
         clock_(std::chrono::steady_clock::now()),
         cpu_(cpu_now()) {}
 
-  void record(config const& cfg, iteration_config const& iteration, std::int64_t bytes, auto span,
-              auto attributes) const {
+  void record(config const& cfg, iteration_config const& iteration,
+              std::int64_t bytes, auto span, auto attributes) const {
     auto const cpu_usage = cpu_now() - cpu_;
     auto const elapsed = std::chrono::steady_clock::now() - clock_;
     auto const mem_usage = mem_now() - mem_;
@@ -466,7 +437,8 @@ void run(config cfg, named_experiments experiments) {
       auto active = tracer->WithActiveSpan(span);
       auto const t = usage();
       auto objects = runner->upload(generator, cfg, data, iteration);
-      t.record(cfg, iteration, objects.size() * iteration.object_size, span, as_attributes(common_attributes));
+      t.record(cfg, iteration, objects.size() * iteration.object_size, span,
+               as_attributes(common_attributes));
       return objects;
     }();
 
@@ -482,7 +454,8 @@ void run(config cfg, named_experiments experiments) {
       auto active = tracer->WithActiveSpan(download_span);
       auto const t = usage();
       auto const bytes = runner->download(cfg, iteration, repeated);
-      t.record(cfg, iteration, bytes, download_span, as_attributes(common_attributes));
+      t.record(cfg, iteration, bytes, download_span,
+               as_attributes(common_attributes));
     }
 
     {
@@ -570,9 +543,9 @@ class sync_download : public experiment {
                       std::move_iterator(m.end()));
       } catch (...) { /* ignore task exceptions */
       }
-      return result;
+    return result;
   }
-  
+
   std::int64_t download(config const& cfg, iteration_config const& iteration,
                         std::vector<object_metadata> objects) override {
     std::vector<std::future<std::int64_t>> tasks(iteration.worker_count);
@@ -627,17 +600,10 @@ auto constexpr kJson = "JSON"sv;
 auto constexpr kGrpcCfe = "GRPC+CFE"sv;
 auto constexpr kGrpcDp = "GRPC+DP"sv;
 
-std::vector<std::string> get_experiments(
-    boost::program_options::variables_map const& vm) {
-  auto const l = vm.find("experiments");
-  if (l != vm.end()) return l->second.as<std::vector<std::string>>();
-  return {std::string(kJson), std::string(kGrpcCfe)};
-}
-
 named_experiments make_experiments(
     boost::program_options::variables_map const& vm) {
   named_experiments ne;
-  for (auto const& name : get_experiments(vm)) {
+  for (auto const& name : vm["experiments"].as<std::vector<std::string>>()) {
     if (name == kJson) {
       ne.emplace(name, std::make_shared<sync_download>(make_json()));
     } else if (name == kGrpcCfe) {
@@ -812,6 +778,8 @@ std::unique_ptr<opentelemetry::metrics::MeterProvider> make_meter_provider(
 }
 
 boost::program_options::variables_map parse_args(int argc, char* argv[]) {
+  auto const cores = static_cast<int>(std::thread::hardware_concurrency());
+
   namespace po = boost::program_options;
   po::options_description desc(
       "A simple publisher application with Open Telemetery enabled");
@@ -827,20 +795,30 @@ boost::program_options::variables_map parse_args(int argc, char* argv[]) {
        " development, or GKE, or GCE.")  //
       ("iterations", po::value<int>()->default_value(kDefaultIterations),
        "the number of iterations before exiting the test")  //
-      ("iteration-seconds", po::value<int>()->default_value(300),
-       "the duration of each iteration")  //
-      ("worker-counts", po::value<std::vector<int>>()->multitoken(),
-       "the object sizes used in the benchmark.")  //
-      ("object-counts", po::value<std::vector<int>>()->multitoken(),
-       "the object counts used in the benchmark.")  //
+      // Create enough workers to keep the available CPUs busy rea
+      ("worker-counts",
+       po::value<std::vector<int>>()->multitoken()->default_value(
+           {cores, 2 * cores}, std::format("[ {}, {} ]", cores, 2 * cores)),
+       "the object sizes used in the benchmark.")
+      // Create enough objects, such that every worker has at least one.
+      ("object-counts",
+       po::value<std::vector<int>>()->multitoken()->default_value(
+           {2 * cores}, std::format("[ {} ]", 2 * cores)),
+       "the object counts used in the benchmark.")
+      // Make the objects large enough to mask the TTFB delays.
       ("object-sizes",
        po::value<std::vector<std::int64_t>>()->multitoken()->default_value(
            {256 * kMiB}, "[ 256MiB ]"),
-       "the object sizes used in the benchmark.")  //
+       "the object sizes used in the benchmark.")
+      // By default read the data only once. That is a fairly cold dataset,
+      // increase this number to simulate hotter datasets.
       ("repeated-read-counts",
        po::value<std::vector<int>>()->multitoken()->default_value({1}, "[ 1 ]"),
        "read each object multiple times to simulate 'hot' data.")  //
-      ("experiments", po::value<std::vector<std::string>>()->multitoken(),
+      ("experiments",
+       po::value<std::vector<std::string>>()->multitoken()->default_value(
+           {std::string(kJson), std::string(kGrpcCfe)},
+           std::format("[ {}, {} ]", kJson, kGrpcCfe)),
        "the experiments used in the benchmark.")  //
       // Open Telemetry Processor options
       ("project-id", po::value<std::string>()->required(),
