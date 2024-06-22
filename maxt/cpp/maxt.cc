@@ -423,6 +423,11 @@ void run(config cfg, named_experiments experiments) {
             {"ssb.version.http-client", LIBCURL_VERSION},
         };
 
+    auto with_op = [common_attributes](opentelemetry::nostd::string_view op) {
+      auto attr = common_attributes;
+      attr.emplace_back("ssb.op", op);
+      return attr;
+    };
     auto as_attributes = [](auto const& attr) {
       using value_type = typename std::decay_t<decltype(attr)>::value_type;
       using span_t = opentelemetry::nostd::span<value_type const>;
@@ -431,37 +436,38 @@ void run(config cfg, named_experiments experiments) {
     };
     // Run the upload step in its own scope
     auto const objects = [&] {
-      auto span = tracer->StartSpan(
-          "ssb::maxt::upload",
-          opentelemetry::common::MakeAttributes(common_attributes));
+      auto attributes = with_op("UPLOAD");
+      auto span =
+          tracer->StartSpan("ssb::maxt::upload",
+                            opentelemetry::common::MakeAttributes(attributes));
       auto active = tracer->WithActiveSpan(span);
       auto const t = usage();
       auto objects = runner->upload(generator, cfg, data, iteration);
       t.record(cfg, iteration, objects.size() * iteration.object_size, span,
-               as_attributes(common_attributes));
+               as_attributes(attributes));
       return objects;
     }();
 
     {
+      auto attributes = with_op("DOWNLOAD");
       std::vector<object_metadata> repeated;
       repeated.reserve(iteration.repeated_read_count * objects.size());
       for (int i = 0; i != iteration.repeated_read_count; ++i) {
         repeated.insert(repeated.end(), objects.begin(), objects.end());
       }
-      auto download_span = tracer->StartSpan(
-          "ssb::maxt::download",
-          opentelemetry::common::MakeAttributes(common_attributes));
+      auto download_span =
+          tracer->StartSpan("ssb::maxt::download",
+                            opentelemetry::common::MakeAttributes(attributes));
       auto active = tracer->WithActiveSpan(download_span);
       auto const t = usage();
       auto const bytes = runner->download(cfg, iteration, repeated);
-      t.record(cfg, iteration, bytes, download_span,
-               as_attributes(common_attributes));
+      t.record(cfg, iteration, bytes, download_span, as_attributes(attributes));
     }
 
     {
       auto span = tracer->StartSpan(
           "ssb::maxt::cleanup",
-          opentelemetry::common::MakeAttributes(common_attributes));
+          opentelemetry::common::MakeAttributes(with_op("CLEANUP")));
       auto active = tracer->WithActiveSpan(span);
       runner->cleanup(cfg, iteration, objects);
       span->End();
@@ -553,7 +559,7 @@ class sync_download : public experiment {
       return std::async(std::launch::async, download_objects, client_,
                         iteration.worker_count, i++, std::cref(objects));
     });
-    std::int64_t result;
+    auto result = std::int64_t{0};
     for (auto& t : tasks) try {
         result += t.get();
       } catch (...) { /* ignore task exceptions */
