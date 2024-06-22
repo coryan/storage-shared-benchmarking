@@ -623,27 +623,26 @@ auto make_dp() {
           "google-c2p:///storage.googleapis.com"));
 }
 
-// TODO(coryan) - these should be 3 dimentions (client, transport, direction)
-auto constexpr kJsonDownloads = "JSON+DOWNLOADS"sv;
-auto constexpr kGrpcCfeDownloads = "GRPC+CFE+DOWNLOADS"sv;
-auto constexpr kGrpcDpDownloads = "GRPC+DP+DOWNLOADS"sv;
+auto constexpr kJson = "JSON"sv;
+auto constexpr kGrpcCfe = "GRPC+CFE"sv;
+auto constexpr kGrpcDp = "GRPC+DP"sv;
 
 std::vector<std::string> get_experiments(
     boost::program_options::variables_map const& vm) {
   auto const l = vm.find("experiments");
   if (l != vm.end()) return l->second.as<std::vector<std::string>>();
-  return {std::string(kJsonDownloads), std::string(kGrpcCfeDownloads)};
+  return {std::string(kJson), std::string(kGrpcCfe)};
 }
 
 named_experiments make_experiments(
     boost::program_options::variables_map const& vm) {
   named_experiments ne;
   for (auto const& name : get_experiments(vm)) {
-    if (name == kJsonDownloads) {
+    if (name == kJson) {
       ne.emplace(name, std::make_shared<sync_download>(make_json()));
-    } else if (name == kGrpcCfeDownloads) {
+    } else if (name == kGrpcCfe) {
       ne.emplace(name, std::make_shared<sync_download>(make_grpc()));
-    } else if (name == kGrpcDpDownloads) {
+    } else if (name == kGrpcDp) {
       ne.emplace(name, std::make_shared<sync_download>(make_dp()));
     } else {
       throw std::invalid_argument("Unknown experiment name: " + name);
