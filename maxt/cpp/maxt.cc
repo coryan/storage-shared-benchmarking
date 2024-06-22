@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <google/cloud/grpc_options.h>
 #include <google/cloud/internal/build_info.h>
 #include <google/cloud/internal/compiler_info.h>
 #include <google/cloud/opentelemetry/configure_basic_tracing.h>
@@ -603,7 +604,7 @@ gc::future<std::vector<object_metadata>> async_upload_objects(
                                      gc::storage_experimental::WritePayload(
                                          std::string(data->data(), n))))
                   .value();
-                  offset += n;
+      offset += n;
     }
     auto m = (co_await writer.Finalize(std::move(token))).value();
     objects.push_back({m.bucket(), m.name(), m.generation()});
@@ -725,14 +726,23 @@ auto make_dp() {
           "google-c2p:///storage.googleapis.com"));
 }
 
-auto make_async_cfe() {
-  return gc::storage_experimental::AsyncClient(options());
+auto async_options(boost::program_options::variables_map const& vm,
+                   std::string_view endpoint) {
+  auto const counts = vm["worker-counts"].as<std::vector<int>>();
+  auto const threads = *std::max_element(counts.begin(), counts.end());
+  return options()
+      .set<gc::GrpcBackgroundThreadPoolSizeOption>(threads)
+      .set<gc::EndpointOption>(std::string(endpoint));
 }
 
-auto make_async_dp() {
+auto make_async_cfe(boost::program_options::variables_map const& vm) {
   return gc::storage_experimental::AsyncClient(
-      options().set<gc::EndpointOption>(
-          "google-c2p:///storage.googleapis.com"));
+      async_options(vm, "storage.googleapis.com"));
+}
+
+auto make_async_dp(boost::program_options::variables_map const& vm) {
+  return gc::storage_experimental::AsyncClient(
+      async_options(vm, "google-c2p:///storage.googleapis.com"));
 }
 
 auto constexpr kJson = "JSON"sv;
@@ -752,9 +762,9 @@ named_experiments make_experiments(
     } else if (name == kGrpcDp) {
       ne.emplace(name, std::make_shared<sync_experiment>(make_dp()));
     } else if (name == kAsyncGrpcCfe) {
-      ne.emplace(name, std::make_shared<async_experiment>(make_async_cfe()));
+      ne.emplace(name, std::make_shared<async_experiment>(make_async_cfe(vm)));
     } else if (name == kAsyncGrpcDp) {
-      ne.emplace(name, std::make_shared<async_experiment>(make_async_dp()));
+      ne.emplace(name, std::make_shared<async_experiment>(make_async_dp(vm)));
     } else {
       throw std::invalid_argument("Unknown experiment name: " + name);
     }
