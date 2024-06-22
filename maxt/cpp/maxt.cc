@@ -525,9 +525,9 @@ void delete_objects(gc::storage::Client client, int task_count, int task_id,
   }
 }
 
-class sync_download : public experiment {
+class sync_experiment : public experiment {
  public:
-  explicit sync_download(gc::storage::Client c) : client_(std::move(c)) {}
+  explicit sync_experiment(gc::storage::Client c) : client_(std::move(c)) {}
 
   std::vector<object_metadata> upload(
       std::mt19937_64& generator, config const& cfg, random_data data,
@@ -584,6 +584,128 @@ class sync_download : public experiment {
   gc::storage::Client client_;
 };
 
+gc::future<std::vector<object_metadata>> async_upload_objects(
+    gc::storage_experimental::AsyncClient client, int task_count, int task_id,
+    std::int64_t object_size, std::string const& bucket_id,
+    std::vector<std::string> const& object_names, random_data data) {
+  gc::storage_experimental::BucketName bucket_name(bucket_id);
+  std::vector<object_metadata> objects;
+  for (std::size_t i = 0; i != object_names.size(); ++i) {
+    if (i % task_count != task_id) continue;
+
+    auto [writer, token] =
+        (co_await client.StartUnbufferedUpload(bucket_name, object_names[i]))
+            .value();
+    auto offset = std::int64_t{0};
+    while (offset < object_size) {
+      auto n = std::min<std::size_t>(object_size - offset, data->size());
+      token = (co_await writer.Write(std::move(token),
+                                     gc::storage_experimental::WritePayload(
+                                         std::string(data->data(), n))))
+                  .value();
+    }
+    auto m = (co_await writer.Finalize(std::move(token))).value();
+    objects.push_back({m.bucket(), m.name(), m.generation()});
+  }
+  co_return objects;
+}
+
+gc::future<std::int64_t> async_download_objects(
+    gc::storage_experimental::AsyncClient client, int task_count, int task_id,
+    std::vector<object_metadata> const& objects) {
+  auto total_bytes = std::int64_t{0};
+  for (std::size_t i = 0; i != objects.size(); ++i) {
+    if (i % task_count != task_id) continue;
+    auto const& object = objects[i];
+    auto request = google::storage::v2::ReadObjectRequest{};
+    request.set_bucket(object.bucket_name);
+    request.set_object(object.object_name);
+    request.set_generation(object.generation);
+    auto [reader, token] =
+        (co_await client.ReadObject(std::move(request))).value();
+    while (token.valid()) {
+      auto [payload, t] = (co_await reader.Read(std::move(token))).value();
+      for (auto sv : payload.contents()) total_bytes += sv.size();
+      token = std::move(t);
+    }
+  }
+  co_return total_bytes;
+}
+
+gc::future<void> async_delete_objects(
+    gc::storage_experimental::AsyncClient client, int task_count, int task_id,
+    std::vector<object_metadata> const& objects) {
+  for (std::size_t i = 0; i != objects.size(); ++i) {
+    if (i % task_count != task_id) continue;
+    auto const& object = objects[i];
+    auto request = google::storage::v2::DeleteObjectRequest{};
+    request.set_bucket(object.bucket_name);
+    request.set_object(object.object_name);
+    request.set_generation(object.generation);
+    (void)co_await client.DeleteObject(std::move(request));
+  }
+  co_return;
+}
+
+class async_experiment : public experiment {
+ public:
+  explicit async_experiment(gc::storage_experimental::AsyncClient c)
+      : client_(std::move(c)) {}
+
+  std::vector<object_metadata> upload(
+      std::mt19937_64& generator, config const& cfg, random_data data,
+      iteration_config const& iteration) override {
+    auto object_names = generate_names(generator, iteration.object_count);
+
+    std::vector<gc::future<std::vector<object_metadata>>> tasks(
+        iteration.worker_count);
+    std::generate(tasks.begin(), tasks.end(), [&, i = 0]() mutable {
+      return async_upload_objects(
+          client_, iteration.worker_count, i++, iteration.object_size,
+          std::cref(cfg.bucket_name), std::cref(object_names), data);
+    });
+    std::vector<object_metadata> result;
+    for (auto& t : tasks) try {
+        auto m = t.get();
+        result.insert(result.end(), std::move_iterator(m.begin()),
+                      std::move_iterator(m.end()));
+      } catch (...) { /* ignore task exceptions */
+      }
+    return result;
+  }
+
+  std::int64_t download(config const& cfg, iteration_config const& iteration,
+                        std::vector<object_metadata> objects) override {
+    std::vector<gc::future<std::int64_t>> tasks(iteration.worker_count);
+    std::generate(tasks.begin(), tasks.end(), [&, i = 0]() mutable {
+      return async_download_objects(client_, iteration.worker_count, i++,
+                                    std::cref(objects));
+    });
+    auto result = std::int64_t{0};
+    for (auto& t : tasks) try {
+        result += t.get();
+      } catch (...) { /* ignore task exceptions */
+      }
+    return result;
+  }
+
+  void cleanup(config const& cfg, iteration_config const& iteration,
+               std::vector<object_metadata> objects) override {
+    std::vector<gc::future<void>> tasks(iteration.worker_count);
+    std::generate(tasks.begin(), tasks.end(), [&, i = 0]() mutable {
+      return async_delete_objects(client_, iteration.worker_count, i++,
+                                  std::cref(objects));
+    });
+    for (auto& t : tasks) try {
+        t.get();
+      } catch (...) { /* ignore task exceptions */
+      }
+  }
+
+ private:
+  gc::storage_experimental::AsyncClient client_;
+};
+
 auto options() {
   return gc::Options{}
       .set<gc::storage::UploadBufferSizeOption>(256 * kKiB)
@@ -602,20 +724,36 @@ auto make_dp() {
           "google-c2p:///storage.googleapis.com"));
 }
 
+auto make_async_cfe() {
+  return gc::storage_experimental::AsyncClient(options());
+}
+
+auto make_async_dp() {
+  return gc::storage_experimental::AsyncClient(
+      options().set<gc::EndpointOption>(
+          "google-c2p:///storage.googleapis.com"));
+}
+
 auto constexpr kJson = "JSON"sv;
 auto constexpr kGrpcCfe = "GRPC+CFE"sv;
 auto constexpr kGrpcDp = "GRPC+DP"sv;
+auto constexpr kAsyncGrpcCfe = "ASYNC+GRPC+CFE"sv;
+auto constexpr kAsyncGrpcDp = "ASYNC+GRPC+DP"sv;
 
 named_experiments make_experiments(
     boost::program_options::variables_map const& vm) {
   named_experiments ne;
   for (auto const& name : vm["experiments"].as<std::vector<std::string>>()) {
     if (name == kJson) {
-      ne.emplace(name, std::make_shared<sync_download>(make_json()));
+      ne.emplace(name, std::make_shared<sync_experiment>(make_json()));
     } else if (name == kGrpcCfe) {
-      ne.emplace(name, std::make_shared<sync_download>(make_grpc()));
+      ne.emplace(name, std::make_shared<sync_experiment>(make_grpc()));
     } else if (name == kGrpcDp) {
-      ne.emplace(name, std::make_shared<sync_download>(make_dp()));
+      ne.emplace(name, std::make_shared<sync_experiment>(make_dp()));
+    } else if (name == kAsyncGrpcCfe) {
+      ne.emplace(name, std::make_shared<async_experiment>(make_async_cfe()));
+    } else if (name == kAsyncGrpcDp) {
+      ne.emplace(name, std::make_shared<async_experiment>(make_async_dp()));
     } else {
       throw std::invalid_argument("Unknown experiment name: " + name);
     }
@@ -823,8 +961,9 @@ boost::program_options::variables_map parse_args(int argc, char* argv[]) {
        "read each object multiple times to simulate 'hot' data.")  //
       ("experiments",
        po::value<std::vector<std::string>>()->multitoken()->default_value(
-           {std::string(kJson), std::string(kGrpcCfe)},
-           std::format("[ {}, {} ]", kJson, kGrpcCfe)),
+           {std::string(kJson), std::string(kGrpcCfe),
+            std::string(kAsyncGrpcCfe)},
+           std::format("[ {}, {}, {} ]", kJson, kGrpcCfe, kAsyncGrpcCfe)),
        "the experiments used in the benchmark.")  //
       // Open Telemetry Processor options
       ("project-id", po::value<std::string>()->required(),
