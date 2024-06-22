@@ -603,6 +603,7 @@ gc::future<std::vector<object_metadata>> async_upload_objects(
                                      gc::storage_experimental::WritePayload(
                                          std::string(data->data(), n))))
                   .value();
+                  offset += n;
     }
     auto m = (co_await writer.Finalize(std::move(token))).value();
     objects.push_back({m.bucket(), m.name(), m.generation()});
