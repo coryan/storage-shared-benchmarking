@@ -302,6 +302,13 @@ auto make_object_name(std::mt19937_64& generator) {
 // global is used to track the value.
 std::atomic<std::uint64_t> allocated_bytes{0};
 
+auto bps(std::int64_t bytes, dseconds elapsed) {
+  if (std::abs(elapsed.count()) < std::numeric_limits<double>::epsilon()) {
+    return static_cast<double>(0.0);
+  }
+  return static_cast<double>(bytes * 8) / elapsed.count();
+}
+
 class usage {
  public:
   usage()
@@ -309,34 +316,28 @@ class usage {
         clock_(std::chrono::steady_clock::now()),
         cpu_(cpu_now()) {}
 
+  auto elapsed_seconds() const {
+    return std::chrono::duration_cast<dseconds>(
+        std::chrono::steady_clock::now() - clock_);
+  }
+
   void record(config const& cfg, iteration_config const& iteration,
               std::int64_t bytes, auto span, auto attributes) const {
     auto const cpu_usage = cpu_now() - cpu_;
-    auto const elapsed = std::chrono::steady_clock::now() - clock_;
+    auto const elapsed = elapsed_seconds();
     auto const mem_usage = mem_now() - mem_;
 
     auto per_byte = [bytes](auto value) {
       if (bytes == 0) return static_cast<double>(value);
       return static_cast<double>(value) / static_cast<double>(bytes);
     };
-    auto throughput = [bytes](auto value) {
-      if (std::abs(value) < std::numeric_limits<double>::epsilon()) {
-        return static_cast<double>(0.0);
-      }
-      return static_cast<double>(bytes * 8) / static_cast<double>(value);
-    };
-
-    std::cout << "TP: "
-              << throughput(
-                     std::chrono::duration_cast<dseconds>(elapsed).count())
-              << std::endl;
 
     cfg.latency->Record(
-        std::chrono::duration_cast<dseconds>(elapsed).count(), attributes,
+        elapsed.count(), attributes,
         opentelemetry::context::Context{}.SetValue("span", span));
     cfg.throughput->Record(
-        throughput(std::chrono::duration_cast<dseconds>(elapsed).count()),
-        attributes, opentelemetry::context::Context{}.SetValue("span", span));
+        bps(bytes, elapsed), attributes,
+        opentelemetry::context::Context{}.SetValue("span", span));
     cfg.cpu->Record(per_byte(cpu_usage.count()), attributes,
                     opentelemetry::context::Context{}.SetValue("span", span));
     cfg.memory->Record(
@@ -448,8 +449,11 @@ void run(config cfg, named_experiments experiments) {
       auto active = tracer->WithActiveSpan(span);
       auto const t = usage();
       auto objects = runner->upload(generator, cfg, data, iteration);
-      t.record(cfg, iteration, objects.size() * iteration.object_size, span,
-               as_attributes(attributes));
+      auto const bytes = objects.size() * iteration.object_size;
+      t.record(cfg, iteration, bytes, span, as_attributes(attributes));
+      std::cout << "UPLOAD " << experiment
+                << " Gbps: " << bps(bytes, t.elapsed_seconds()) / 1'000'000'000
+                << std::endl;
       return objects;
     }();
 
@@ -467,6 +471,9 @@ void run(config cfg, named_experiments experiments) {
       auto const t = usage();
       auto const bytes = runner->download(cfg, iteration, repeated);
       t.record(cfg, iteration, bytes, download_span, as_attributes(attributes));
+      std::cout << "DOWNLOAD " << experiment
+                << " Gbps: " << bps(bytes, t.elapsed_seconds()) / 1'000'000'000
+                << std::endl;
     }
 
     {
