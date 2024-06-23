@@ -271,7 +271,10 @@ int main(int argc, char* argv[]) try {
             << "\n# tracing-rate: " << vm["tracing-rate"].as<double>()     //
             << std::endl;                                                  //
 
-  run(cfg, make_experiments(vm));
+  std::vector<std::jthread> runners;
+  std::generate_n(
+      std::back_inserter(runners), vm["runners"].as<int>(),
+      [&cfg, &vm] { return std::jthread(run, cfg, make_experiments(vm)); });
 
   return EXIT_SUCCESS;
 } catch (std::exception const& ex) {
@@ -388,8 +391,9 @@ void run(config cfg, named_experiments experiments) {
   auto generator = make_prng_bits_generator();
   auto data = std::make_shared<std::vector<char> const>(
       generate_random_data(generator));
-  // Opentelemetry captures all string values as `std::string_view`. We need
-  // to capture these strings in variables with lifetime longer than the loop.
+  // Opentelemetry captures all string values as
+  // `opentelemetry::nostd::string_view`. We need to these strings in variables
+  // with lifetime longer than the loop.
   auto const sdk_version = gc::version_string();
   auto const grpc_version = grpc::Version();
 
@@ -501,7 +505,7 @@ auto upload_objects(gc::storage::Client client, int task_count, int task_id,
 auto download_objects(gc::storage::Client client, int task_count, int task_id,
                       std::vector<object_metadata> const& objects) {
   auto total_bytes = std::int64_t{0};
-  std::vector<char> buffer(1 * kMiB);
+  std::vector<char> buffer(16 * kMiB);
   for (std::size_t i = 0; i != objects.size(); ++i) {
     if (i % task_count != task_id) continue;
     auto const& meta = objects[i];
@@ -517,7 +521,6 @@ auto download_objects(gc::storage::Client client, int task_count, int task_id,
 
 void delete_objects(gc::storage::Client client, int task_count, int task_id,
                     std::vector<object_metadata> const& objects) {
-  std::vector<char> buffer(1 * kMiB);
   for (std::size_t i = 0; i != objects.size(); ++i) {
     if (i % task_count != task_id) continue;
     auto const& meta = objects[i];
@@ -981,6 +984,9 @@ boost::program_options::variables_map parse_args(int argc, char* argv[]) {
             std::string(kAsyncGrpcCfe)},
            std::format("[ {}, {}, {} ]", kJson, kGrpcCfe, kAsyncGrpcCfe)),
        "the experiments used in the benchmark.")
+      //
+      ("runners", po::value<int>()->default_value(1),
+       "the number of runners to run in parallel.")
       // gRPC configuration options
       ("cfe-thread-pool", po::value<int>(), "CFE background thread pool.")  //
       ("cfe-channels", po::value<int>(), "the number of CFE channels.")     //
