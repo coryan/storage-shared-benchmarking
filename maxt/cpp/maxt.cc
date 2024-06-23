@@ -727,22 +727,27 @@ auto make_dp() {
 }
 
 auto async_options(boost::program_options::variables_map const& vm,
-                   std::string_view endpoint) {
-  auto const counts = vm["worker-counts"].as<std::vector<int>>();
-  auto const threads = *std::max_element(counts.begin(), counts.end());
-  return options()
-      .set<gc::GrpcBackgroundThreadPoolSizeOption>(threads)
-      .set<gc::EndpointOption>(std::string(endpoint));
+                   std::string prefix, std::string_view endpoint) {
+  auto opts = options().set<gc::EndpointOption>(std::string(endpoint));
+  auto l = vm.find(prefix + "thread-pool");
+  if (l != vm.end()) {
+    opts.set<gc::GrpcBackgroundThreadPoolSizeOption>(l->second.as<int>());
+  }
+  l = vm.find(prefix + "channels");
+  if (l != vm.end()) {
+    opts.set<gc::GrpcNumChannelsOption>(l->second.as<int>());
+  }
+  return opts;
 }
 
 auto make_async_cfe(boost::program_options::variables_map const& vm) {
   return gc::storage_experimental::AsyncClient(
-      async_options(vm, "storage.googleapis.com"));
+      async_options(vm, "cfe-", "storage.googleapis.com"));
 }
 
 auto make_async_dp(boost::program_options::variables_map const& vm) {
   return gc::storage_experimental::AsyncClient(
-      async_options(vm, "google-c2p:///storage.googleapis.com"));
+      async_options(vm, "dp-", "google-c2p:///storage.googleapis.com"));
 }
 
 auto constexpr kJson = "JSON"sv;
@@ -975,7 +980,12 @@ boost::program_options::variables_map parse_args(int argc, char* argv[]) {
            {std::string(kJson), std::string(kGrpcCfe),
             std::string(kAsyncGrpcCfe)},
            std::format("[ {}, {}, {} ]", kJson, kGrpcCfe, kAsyncGrpcCfe)),
-       "the experiments used in the benchmark.")  //
+       "the experiments used in the benchmark.")
+      // gRPC configuration options
+      ("cfe-thread-pool", po::value<int>(), "CFE background thread pool.")  //
+      ("cfe-channels", po::value<int>(), "the number of CFE channels.")     //
+      ("dp-thread-pool", po::value<int>(), "DP background thread pool.")    //
+      ("dp-channels", po::value<int>(), "the number of DP channels.")       //
       // Open Telemetry Processor options
       ("project-id", po::value<std::string>()->required(),
        "a Google Cloud Project id. The benchmark sends its results to this"
