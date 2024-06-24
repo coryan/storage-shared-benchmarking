@@ -772,14 +772,24 @@ auto options() {
 
 auto make_json() { return gc::storage::Client(options()); }
 
-auto make_grpc() {
-  return gc::storage_experimental::DefaultGrpcClient(options());
+auto grpc_options(boost::program_options::variables_map const& vm,
+                  std::string prefix, std::string_view endpoint) {
+  auto opts = options().set<gc::EndpointOption>(std::string(endpoint));
+  auto const l = vm.find(prefix + "channels");
+  if (l != vm.end()) {
+    opts.set<gc::GrpcNumChannelsOption>(l->second.as<int>());
+  }
+  return opts;
 }
 
-auto make_dp() {
+auto make_grpc(boost::program_options::variables_map const& vm) {
   return gc::storage_experimental::DefaultGrpcClient(
-      options().set<gc::EndpointOption>(
-          "google-c2p:///storage.googleapis.com"));
+      grpc_options(vm, "cfe-", "storage.googleapis.com"));
+}
+
+auto make_dp(boost::program_options::variables_map const& vm) {
+  return gc::storage_experimental::DefaultGrpcClient(
+      grpc_options(vm, "dp-", "google-c2p:///storage.googleapis.com"));
 }
 
 auto async_options(boost::program_options::variables_map const& vm,
@@ -819,9 +829,9 @@ named_experiments make_experiments(
     if (name == kJson) {
       ne.emplace(name, std::make_shared<sync_experiment>(make_json()));
     } else if (name == kGrpcCfe) {
-      ne.emplace(name, std::make_shared<sync_experiment>(make_grpc()));
+      ne.emplace(name, std::make_shared<sync_experiment>(make_grpc(vm)));
     } else if (name == kGrpcDp) {
-      ne.emplace(name, std::make_shared<sync_experiment>(make_dp()));
+      ne.emplace(name, std::make_shared<sync_experiment>(make_dp(vm)));
     } else if (name == kAsyncGrpcCfe) {
       ne.emplace(name, std::make_shared<async_experiment>(make_async_cfe(vm)));
     } else if (name == kAsyncGrpcDp) {
