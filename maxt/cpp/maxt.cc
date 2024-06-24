@@ -361,28 +361,28 @@ class usage {
 
   void record_single(config const& cfg, iteration_config const& iteration,
                      std::string_view op) const {
-    auto const attributes = opentelemetry::common::MakeAttributes({
-        {"ssb.app", otel_sv(kAppName)},
-        {"ssb.language", "cpp"},
-        {"ssb.experiment", iteration.experiment},
-        {"ssb.op", otel_sv(op)},
-        {"ssb.object-size", iteration.object_size},
-        {"ssb.object-count", iteration.object_count},
-        {"ssb.worker-count", iteration.worker_count},
-        {"ssb.worker-count", iteration.repeated_read_count},
-        {"ssb.deployment", cfg.deployment},
-        {"ssb.instance", cfg.instance},
-        {"ssb.region", cfg.region},
-        {"ssb.version", cfg.ssb_version},
-        {"ssb.version.sdk", cfg.sdk_version},
-        {"ssb.version.grpc", cfg.grpc_version},
-        {"ssb.version.protobuf", cfg.protobuf_version},
-        {"ssb.version.http-client", cfg.http_client_version},
-    });
-
     auto const elapsed = elapsed_seconds();
-    cfg.latency->Record(elapsed.count(), attributes,
-                        opentelemetry::context::Context{});
+    cfg.latency->Record(
+        elapsed.count(),
+        opentelemetry::common::MakeAttributes({
+            {"ssb.app", otel_sv(kAppName)},
+            {"ssb.language", "cpp"},
+            {"ssb.experiment", iteration.experiment},
+            {"ssb.op", otel_sv(op)},
+            {"ssb.object-size", iteration.object_size},
+            {"ssb.object-count", iteration.object_count},
+            {"ssb.worker-count", iteration.worker_count},
+            {"ssb.worker-count", iteration.repeated_read_count},
+            {"ssb.deployment", cfg.deployment},
+            {"ssb.instance", cfg.instance},
+            {"ssb.region", cfg.region},
+            {"ssb.version", cfg.ssb_version},
+            {"ssb.version.sdk", cfg.sdk_version},
+            {"ssb.version.grpc", cfg.grpc_version},
+            {"ssb.version.protobuf", cfg.protobuf_version},
+            {"ssb.version.http-client", cfg.http_client_version},
+        }),
+        opentelemetry::context::Context{});
   }
 
  private:
