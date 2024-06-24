@@ -122,6 +122,11 @@ struct config {
   std::vector<int> worker_counts;
   std::vector<int> object_counts;
   std::vector<int> repeated_read_counts;
+  std::string ssb_version;
+  std::string sdk_version;
+  std::string grpc_version;
+  std::string protobuf_version;
+  std::string http_client_version;
   histogram_ptr latency;
   histogram_ptr throughput;
   histogram_ptr cpu;
@@ -137,6 +142,7 @@ struct object_metadata {
 };
 
 struct iteration_config {
+  std::string experiment;
   std::int64_t object_size;
   int object_count;
   int worker_count;
@@ -144,9 +150,10 @@ struct iteration_config {
 };
 
 struct experiment {
-  virtual std::vector<object_metadata> upload(
-      std::mt19937_64& generator, config const& cfg, random_data data,
-      iteration_config const& iteration) = 0;
+  virtual std::vector<object_metadata> upload(std::mt19937_64& generator,
+                                              config const& cfg,
+                                              iteration_config const& iteration,
+                                              random_data data) = 0;
   virtual std::int64_t download(config const& cfg,
                                 iteration_config const& iteration,
                                 std::vector<object_metadata> objects) = 0;
@@ -236,6 +243,11 @@ int main(int argc, char* argv[]) try {
       .worker_counts = vm["worker-counts"].as<std::vector<int>>(),
       .object_counts = vm["object-counts"].as<std::vector<int>>(),
       .repeated_read_counts = vm["repeated-read-counts"].as<std::vector<int>>(),
+      .ssb_version = SSB_VERSION,
+      .sdk_version = gc::version_string(),
+      .grpc_version = grpc::Version(),
+      .protobuf_version = SSB_PROTOBUF_VERSION,
+      .http_client_version = LIBCURL_VERSION,
       .latency = std::move(latency),
       .throughput = std::move(throughput),
       .cpu = std::move(cpu),
@@ -260,13 +272,13 @@ int main(int argc, char* argv[]) try {
             << join(cfg.repeated_read_counts)                              //
             << "\n# experiments: "                                         //
             << join(vm["experiments"].as<std::vector<std::string>>())      //
-            << "\n# Version: " << SSB_VERSION                              //
-            << "\n# C++ SDK version: " << gc::version_string()             //
+            << "\n# Version: " << cfg.ssb_version                          //
+            << "\n# C++ SDK version: " << cfg.sdk_version                  //
+            << "\n# gRPC version: " << cfg.grpc_version                    //
+            << "\n# Protobuf version: " << cfg.protobuf_version            //
             << "\n# C++ SDK Compiler: " << gci::CompilerId()               //
             << "\n# C++ SDK Compiler Version: " << gci::CompilerVersion()  //
             << "\n# C++ SDK Compiler Flags: " << gci::compiler_flags()     //
-            << "\n# gRPC version: " << grpc::Version()                     //
-            << "\n# Protobuf version: " << SSB_PROTOBUF_VERSION            //
             << "\n# project-id: " << project                               //
             << "\n# tracing-rate: " << vm["tracing-rate"].as<double>()     //
             << std::endl;                                                  //
@@ -309,6 +321,10 @@ auto bps(std::int64_t bytes, dseconds elapsed) {
   return static_cast<double>(bytes * 8) / elapsed.count();
 }
 
+auto otel_sv(std::string_view s) {
+  return opentelemetry::nostd::string_view(s.data(), s.size());
+}
+
 class usage {
  public:
   usage()
@@ -332,9 +348,6 @@ class usage {
       return static_cast<double>(value) / static_cast<double>(bytes);
     };
 
-    cfg.latency->Record(
-        elapsed.count(), attributes,
-        opentelemetry::context::Context{}.SetValue("span", span));
     cfg.throughput->Record(
         bps(bytes, elapsed), attributes,
         opentelemetry::context::Context{}.SetValue("span", span));
@@ -344,6 +357,32 @@ class usage {
         per_byte(mem_usage), attributes,
         opentelemetry::context::Context{}.SetValue("span", span));
     span->End();
+  }
+
+  void record_single(config const& cfg, iteration_config const& iteration,
+                     std::string_view op) const {
+    auto const attributes = opentelemetry::common::MakeAttributes({
+        {"ssb.app", otel_sv(kAppName)},
+        {"ssb.language", "cpp"},
+        {"ssb.experiment", iteration.experiment},
+        {"ssb.op", otel_sv(op)},
+        {"ssb.object-size", iteration.object_size},
+        {"ssb.object-count", iteration.object_count},
+        {"ssb.worker-count", iteration.worker_count},
+        {"ssb.worker-count", iteration.repeated_read_count},
+        {"ssb.deployment", cfg.deployment},
+        {"ssb.instance", cfg.instance},
+        {"ssb.region", cfg.region},
+        {"ssb.version", cfg.ssb_version},
+        {"ssb.version.sdk", cfg.sdk_version},
+        {"ssb.version.grpc", cfg.grpc_version},
+        {"ssb.version.protobuf", cfg.protobuf_version},
+        {"ssb.version.http-client", cfg.http_client_version},
+    });
+
+    auto const elapsed = elapsed_seconds();
+    cfg.latency->Record(elapsed.count(), attributes,
+                        opentelemetry::context::Context{});
   }
 
  private:
@@ -392,16 +431,12 @@ void run(config cfg, named_experiments experiments) {
   auto generator = make_prng_bits_generator();
   auto data = std::make_shared<std::vector<char> const>(
       generate_random_data(generator));
-  // Opentelemetry captures all string values as
-  // `opentelemetry::nostd::string_view`. We need to these strings in variables
-  // with lifetime longer than the loop.
-  auto const sdk_version = gc::version_string();
-  auto const grpc_version = grpc::Version();
 
   for (int i = 0; i != cfg.iterations; ++i) {
     auto const [experiment, runner] = pick_one(generator, experiments);
 
     auto const iteration = iteration_config{
+        .experiment = std::move(experiment),
         .object_size = pick_one(generator, cfg.object_sizes),
         .object_count = pick_one(generator, cfg.object_counts),
         .worker_count = pick_one(generator, cfg.worker_counts),
@@ -411,10 +446,9 @@ void run(config cfg, named_experiments experiments) {
     auto common_attributes =
         std::vector<std::pair<opentelemetry::nostd::string_view,
                               opentelemetry::common::AttributeValue>>{
-            {"ssb.app", opentelemetry::nostd::string_view(kAppName.data(),
-                                                          kAppName.size())},
+            {"ssb.app", otel_sv(kAppName)},
             {"ssb.language", "cpp"},
-            {"ssb.experiment", experiment},
+            {"ssb.experiment", iteration.experiment},
             {"ssb.object-size", iteration.object_size},
             {"ssb.object-count", iteration.object_count},
             {"ssb.worker-count", iteration.worker_count},
@@ -422,11 +456,11 @@ void run(config cfg, named_experiments experiments) {
             {"ssb.deployment", cfg.deployment},
             {"ssb.instance", cfg.instance},
             {"ssb.region", cfg.region},
-            {"ssb.version", SSB_VERSION},
-            {"ssb.version.sdk", sdk_version},
-            {"ssb.version.grpc", grpc_version},
-            {"ssb.version.protobuf", SSB_PROTOBUF_VERSION},
-            {"ssb.version.http-client", LIBCURL_VERSION},
+            {"ssb.version", cfg.ssb_version},
+            {"ssb.version.sdk", cfg.sdk_version},
+            {"ssb.version.grpc", cfg.grpc_version},
+            {"ssb.version.protobuf", cfg.protobuf_version},
+            {"ssb.version.http-client", cfg.http_client_version},
         };
 
     auto with_op = [common_attributes](opentelemetry::nostd::string_view op) {
@@ -448,7 +482,7 @@ void run(config cfg, named_experiments experiments) {
                             opentelemetry::common::MakeAttributes(attributes));
       auto active = tracer->WithActiveSpan(span);
       auto const t = usage();
-      auto objects = runner->upload(generator, cfg, data, iteration);
+      auto objects = runner->upload(generator, cfg, iteration, data);
       auto const bytes = objects.size() * iteration.object_size;
       t.record(cfg, iteration, bytes, span, as_attributes(attributes));
       std::cout << "UPLOAD " << experiment
@@ -487,21 +521,24 @@ void run(config cfg, named_experiments experiments) {
   }
 }
 
-auto upload_objects(gc::storage::Client client, int task_count, int task_id,
-                    std::int64_t object_size, std::string const& bucket_name,
+auto upload_objects(config const& cfg, iteration_config const& iteration,
+                    gc::storage::Client client, int task_id,
                     std::vector<std::string> const& object_names,
                     random_data data) {
   std::vector<object_metadata> objects;
   for (std::size_t i = 0; i != object_names.size(); ++i) {
-    if (i % task_count != task_id) continue;
+    if (i % iteration.worker_count != task_id) continue;
     auto const& name = object_names[i];
-    auto os = client.WriteObject(bucket_name, name);
-    for (std::int64_t offset = 0; offset < object_size;) {
-      auto n = std::min<std::int64_t>(data->size(), object_size - offset);
+    auto t = usage();
+    auto os = client.WriteObject(cfg.bucket_name, name);
+    for (std::int64_t offset = 0; offset < iteration.object_size;) {
+      auto n =
+          std::min<std::int64_t>(data->size(), iteration.object_size - offset);
       os.write(data->data(), n);
       offset += n;
     }
     os.Close();
+    t.record_single(cfg, iteration, "UPLOAD");
     auto meta = os.metadata();
     if (os.bad() || !meta) continue;
     objects.push_back({meta->bucket(), meta->name(), meta->generation()});
@@ -509,19 +546,22 @@ auto upload_objects(gc::storage::Client client, int task_count, int task_id,
   return objects;
 }
 
-auto download_objects(gc::storage::Client client, int task_count, int task_id,
+auto download_objects(config const& cfg, iteration_config const& iteration,
+                      gc::storage::Client client, int task_id,
                       std::vector<object_metadata> const& objects) {
   auto total_bytes = std::int64_t{0};
   std::vector<char> buffer(16 * kMiB);
   for (std::size_t i = 0; i != objects.size(); ++i) {
-    if (i % task_count != task_id) continue;
+    if (i % iteration.worker_count != task_id) continue;
     auto const& meta = objects[i];
+    auto t = usage();
     auto is = client.ReadObject(meta.bucket_name, meta.object_name,
                                 gc::storage::Generation(meta.generation));
     while (!is.bad() && !is.eof()) {
       is.read(buffer.data(), buffer.size());
       total_bytes += is.gcount();
     }
+    t.record_single(cfg, iteration, "DOWNLOAD");
   }
   return total_bytes;
 }
@@ -540,18 +580,18 @@ class sync_experiment : public experiment {
  public:
   explicit sync_experiment(gc::storage::Client c) : client_(std::move(c)) {}
 
-  std::vector<object_metadata> upload(
-      std::mt19937_64& generator, config const& cfg, random_data data,
-      iteration_config const& iteration) override {
+  std::vector<object_metadata> upload(std::mt19937_64& generator,
+                                      config const& cfg,
+                                      iteration_config const& iteration,
+                                      random_data data) override {
     auto object_names = generate_names(generator, iteration.object_count);
 
     std::vector<std::future<std::vector<object_metadata>>> tasks(
         iteration.worker_count);
     std::generate(tasks.begin(), tasks.end(), [&, i = 0]() mutable {
-      return std::async(std::launch::async, upload_objects, client_,
-                        iteration.worker_count, i++, iteration.object_size,
-                        std::cref(cfg.bucket_name), std::cref(object_names),
-                        data);
+      return std::async(std::launch::async, upload_objects, std::cref(cfg),
+                        std::cref(iteration), client_, i++,
+                        std::cref(object_names), data);
     });
     std::vector<object_metadata> result;
     for (auto& t : tasks) try {
@@ -567,8 +607,8 @@ class sync_experiment : public experiment {
                         std::vector<object_metadata> objects) override {
     std::vector<std::future<std::int64_t>> tasks(iteration.worker_count);
     std::generate(tasks.begin(), tasks.end(), [&, i = 0]() mutable {
-      return std::async(std::launch::async, download_objects, client_,
-                        iteration.worker_count, i++, std::cref(objects));
+      return std::async(std::launch::async, download_objects, std::cref(cfg),
+                        std::cref(iteration), client_, i++, std::cref(objects));
     });
     auto result = std::int64_t{0};
     for (auto& t : tasks) try {
@@ -596,20 +636,22 @@ class sync_experiment : public experiment {
 };
 
 gc::future<std::vector<object_metadata>> async_upload_objects(
-    gc::storage_experimental::AsyncClient client, int task_count, int task_id,
-    std::int64_t object_size, std::string const& bucket_id,
+    config const& cfg, iteration_config const& iteration,
+    gc::storage_experimental::AsyncClient client, int task_id,
     std::vector<std::string> const& object_names, random_data data) {
-  gc::storage_experimental::BucketName bucket_name(bucket_id);
+  gc::storage_experimental::BucketName bucket_name(cfg.bucket_name);
   std::vector<object_metadata> objects;
   for (std::size_t i = 0; i != object_names.size(); ++i) {
-    if (i % task_count != task_id) continue;
+    if (i % iteration.worker_count != task_id) continue;
 
+    auto t = usage();
     auto [writer, token] =
         (co_await client.StartUnbufferedUpload(bucket_name, object_names[i]))
             .value();
     auto offset = std::int64_t{0};
-    while (offset < object_size) {
-      auto n = std::min<std::size_t>(object_size - offset, data->size());
+    while (offset < iteration.object_size) {
+      auto n =
+          std::min<std::size_t>(iteration.object_size - offset, data->size());
       token = (co_await writer.Write(std::move(token),
                                      gc::storage_experimental::WritePayload(
                                          std::string(data->data(), n))))
@@ -617,18 +659,21 @@ gc::future<std::vector<object_metadata>> async_upload_objects(
       offset += n;
     }
     auto m = (co_await writer.Finalize(std::move(token))).value();
+    t.record_single(cfg, iteration, "UPLOAD");
     objects.push_back({m.bucket(), m.name(), m.generation()});
   }
   co_return objects;
 }
 
 gc::future<std::int64_t> async_download_objects(
-    gc::storage_experimental::AsyncClient client, int task_count, int task_id,
+    config const& cfg, iteration_config const& iteration,
+    gc::storage_experimental::AsyncClient client, int task_id,
     std::vector<object_metadata> const& objects) {
   auto total_bytes = std::int64_t{0};
   for (std::size_t i = 0; i != objects.size(); ++i) {
-    if (i % task_count != task_id) continue;
+    if (i % iteration.worker_count != task_id) continue;
     auto const& object = objects[i];
+    auto t = usage();
     auto request = google::storage::v2::ReadObjectRequest{};
     request.set_bucket(object.bucket_name);
     request.set_object(object.object_name);
@@ -640,6 +685,7 @@ gc::future<std::int64_t> async_download_objects(
       for (auto sv : payload.contents()) total_bytes += sv.size();
       token = std::move(t);
     }
+    t.record_single(cfg, iteration, "DOWNLOAD");
   }
   co_return total_bytes;
 }
@@ -664,17 +710,17 @@ class async_experiment : public experiment {
   explicit async_experiment(gc::storage_experimental::AsyncClient c)
       : client_(std::move(c)) {}
 
-  std::vector<object_metadata> upload(
-      std::mt19937_64& generator, config const& cfg, random_data data,
-      iteration_config const& iteration) override {
+  std::vector<object_metadata> upload(std::mt19937_64& generator,
+                                      config const& cfg,
+                                      iteration_config const& iteration,
+                                      random_data data) override {
     auto object_names = generate_names(generator, iteration.object_count);
 
     std::vector<gc::future<std::vector<object_metadata>>> tasks(
         iteration.worker_count);
     std::generate(tasks.begin(), tasks.end(), [&, i = 0]() mutable {
-      return async_upload_objects(
-          client_, iteration.worker_count, i++, iteration.object_size,
-          std::cref(cfg.bucket_name), std::cref(object_names), data);
+      return async_upload_objects(cfg, iteration, client_, i++,
+                                  std::cref(object_names), data);
     });
     std::vector<object_metadata> result;
     for (auto& t : tasks) try {
@@ -690,7 +736,7 @@ class async_experiment : public experiment {
                         std::vector<object_metadata> objects) override {
     std::vector<gc::future<std::int64_t>> tasks(iteration.worker_count);
     std::generate(tasks.begin(), tasks.end(), [&, i = 0]() mutable {
-      return async_download_objects(client_, iteration.worker_count, i++,
+      return async_download_objects(cfg, iteration, client_, i++,
                                     std::cref(objects));
     });
     auto result = std::int64_t{0};
