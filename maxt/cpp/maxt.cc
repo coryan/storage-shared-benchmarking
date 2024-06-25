@@ -808,17 +808,18 @@ class async_experiment : public experiment {
   gc::storage_experimental::AsyncClient client_;
 };
 
-auto options() {
+auto options(boost::program_options::variables_map const& vm) {
+  auto enable_tracing = vm["tracing-rate"].as<double>() != 0.0;
   return gc::Options{}
       .set<gc::storage::UploadBufferSizeOption>(256 * kKiB)
-      .set<gc::OpenTelemetryTracingOption>(true);
+      .set<gc::OpenTelemetryTracingOption>(enable_tracing);
 }
 
-auto make_json() { return gc::storage::Client(options()); }
+auto make_json(boost::program_options::variables_map const& vm) { return gc::storage::Client(options(vm)); }
 
 auto grpc_options(boost::program_options::variables_map const& vm,
                   std::string prefix, std::string_view endpoint) {
-  auto opts = options().set<gc::EndpointOption>(std::string(endpoint));
+  auto opts = options(vm).set<gc::EndpointOption>(std::string(endpoint));
   auto const l = vm.find(prefix + "channels");
   if (l != vm.end()) {
     opts.set<gc::GrpcNumChannelsOption>(l->second.as<int>());
@@ -838,7 +839,7 @@ auto make_dp(boost::program_options::variables_map const& vm) {
 
 auto async_options(boost::program_options::variables_map const& vm,
                    std::string prefix, std::string_view endpoint) {
-  auto opts = options().set<gc::EndpointOption>(std::string(endpoint));
+  auto opts = options(vm).set<gc::EndpointOption>(std::string(endpoint));
   auto l = vm.find(prefix + "thread-pool");
   if (l != vm.end()) {
     opts.set<gc::GrpcBackgroundThreadPoolSizeOption>(l->second.as<int>());
@@ -871,7 +872,7 @@ named_experiments make_experiments(
   named_experiments ne;
   for (auto const& name : vm["experiments"].as<std::vector<std::string>>()) {
     if (name == kJson) {
-      ne.emplace(name, std::make_shared<sync_experiment>(make_json()));
+      ne.emplace(name, std::make_shared<sync_experiment>(make_json(vm)));
     } else if (name == kGrpcCfe) {
       ne.emplace(name, std::make_shared<sync_experiment>(make_grpc(vm)));
     } else if (name == kGrpcDp) {
