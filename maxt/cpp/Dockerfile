@@ -19,13 +19,25 @@ RUN apk update && \
     apk add bash ca-certificates cmake curl git \
         gcc g++ make ninja-build ninja-is-really-ninja tar unzip zip zlib-dev
 
-# The versions of Abseil (>= 20230802.1), Protobuf (>= v24.4), gRPC (>= 1.59.3),
-# OpenSSL, and nlohmann-json included with Alpine are good enough for this
-# benchmark.
+# We compile Abseil, Protobuf and gRPC from source to pick the latest versions
+# and to enable OTel support in gRPC.
 RUN apk update && \
-    apk add abseil-cpp-dev crc32c-dev c-ares-dev curl-dev grpc-dev \
-        protobuf-dev nlohmann-json openssl-dev re2-dev
+    apk add crc32c-dev c-ares-dev curl-dev \
+        nlohmann-json openssl-dev re2-dev
 
+WORKDIR /var/tmp/build
+RUN curl -fsSL https://github.com/abseil/abseil-cpp/archive/20240116.2.tar.gz | \
+    tar -xzf - --strip-components=1 && \
+    cmake \
+        -GNinja -S . -B .build \
+        -DCMAKE_CXX_STANDARD=20 \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DBUILD_SHARED_LIBS=OFF \
+        -DABSL_BUILD_TESTING=OFF \
+        -DABSL_PROPAGATE_CXX_STD=ON && \
+    cmake --build .build && cmake --install .build && \
+    rm -fr .build
+        
 # Alpine does not include a package for OpenTelemetry, so we compile it from
 # source.
 WORKDIR /var/tmp/build/opentelemetry-cpp
@@ -33,14 +45,49 @@ RUN curl -fsSL https://github.com/open-telemetry/opentelemetry-cpp/archive/v1.15
     tar -xzf - --strip-components=1 && \
     cmake \
         -G Ninja -S . -B .build \
+        -DCMAKE_CXX_STANDARD=20 \
         -DCMAKE_BUILD_TYPE=Release \
+        -DBUILD_SHARED_LIBS=OFF \
         -DWITH_EXAMPLES=OFF \
         -DWITH_ABSEIL=ON \
         -DBUILD_TESTING=OFF \
         -DOPENTELEMETRY_INSTALL=ON \
         -DOPENTELEMETRY_ABI_VERSION_NO=2 && \
-    cmake --build .build && \
-    cmake --install .build && \
+    cmake --build .build && cmake --install .build && \
+    rm -fr .build
+
+WORKDIR /var/tmp/build/protobuf
+RUN curl -fsSL https://github.com/protocolbuffers/protobuf/archive/v27.1.tar.gz | \
+    tar -xzf - --strip-components=1 && \
+    cmake \
+        -GNinja -S . -B .build \
+        -DCMAKE_CXX_STANDARD=20 \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DBUILD_SHARED_LIBS=OFF \
+        -Dprotobuf_BUILD_TESTS=OFF \
+        -Dprotobuf_ABSL_PROVIDER=package && \
+    cmake --build .build && cmake --install .build && \
+    rm -fr .build
+    
+WORKDIR /var/tmp/build/grpc
+RUN curl -fsSL https://github.com/grpc/grpc/archive/v1.64.2.tar.gz | \
+    tar -xzf - --strip-components=1 && \
+    cmake \
+        -GNinja -S . -B .build \
+        -DCMAKE_CXX_STANDARD=20 \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DBUILD_SHARED_LIBS=OFF \
+        -DgRPC_INSTALL=ON \
+        -DgRPC_BUILD_TESTS=OFF \
+        -DgRPC_ABSL_PROVIDER=package \
+        -DgRPC_CARES_PROVIDER=package \
+        -DgRPC_PROTOBUF_PROVIDER=package \
+        -DgRPC_RE2_PROVIDER=package \
+        -DgRPC_SSL_PROVIDER=package \
+        -DgRPC_ZLIB_PROVIDER=package \
+        -DgRPC_OPENTELEMETRY_PROVIDER=package \
+        -DgRPC_BUILD_GRPCPP_OTEL_PLUGIN=ON && \
+    cmake --build .build && cmake --install .build && \
     rm -fr .build
 
 WORKDIR /var/tmp/build/google-cloud-cpp
@@ -49,11 +96,11 @@ RUN curl -fsSL https://github.com/googleapis/google-cloud-cpp/archive/v2.25.0.ta
     cmake \
       -G Ninja -S . -B .build \
       -DCMAKE_BUILD_TYPE=Release \
+      -DBUILD_SHARED_LIBS=OFF \
       -DBUILD_TESTING=OFF \
       -DGOOGLE_CLOUD_CPP_ENABLE_EXAMPLES=OFF \
       -DGOOGLE_CLOUD_CPP_ENABLE=storage,experimental-storage_grpc,monitoring,opentelemetry && \
-    cmake --build .build && \
-    cmake --install .build && \
+    cmake --build .build && cmake --install .build && \
     rm -fr .build
 
 RUN apk update && \
@@ -71,7 +118,6 @@ RUN cmake -G Ninja -S maxt/cpp -B .build -DCMAKE_BUILD_TYPE=Release && \
 FROM alpine:3.20 AS deploy
 
 RUN apk update && \
-    apk add bash ca-certificates grpc-cpp libprotobuf \
-            boost1.84-program_options libcurl crc32c
+    apk add bash ca-certificates boost1.84-program_options libcurl crc32c re2
 
 COPY --from=build /var/tmp/build/maxt/.build/maxt /r/maxt
