@@ -61,3 +61,19 @@ target_link_libraries(
             opentelemetry-cpp::metrics
             opentelemetry-cpp::ostream_metrics_exporter
             Boost::program_options)
+
+add_executable(main main.cc)
+target_compile_features(main PRIVATE cxx_std_20)
+set_target_properties(main PROPERTIES CXX_EXTENSIONS OFF)
+target_sources(main PUBLIC FILE_SET  CXX_MODULES FILES config.cc)
+
+target_link_libraries(
+    main
+    PRIVATE google-cloud-cpp::experimental-storage_grpc
+            google-cloud-cpp::storage
+            google-cloud-cpp::monitoring
+            google-cloud-cpp::opentelemetry
+            opentelemetry-cpp::trace
+            opentelemetry-cpp::metrics
+            opentelemetry-cpp::ostream_metrics_exporter
+            Boost::program_options)
