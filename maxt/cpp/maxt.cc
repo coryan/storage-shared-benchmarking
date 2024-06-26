@@ -182,10 +182,8 @@ std::shared_ptr<opentelemetry::trace::TracerProvider> make_tracer_provider(
   auto detector = google::cloud::otel::MakeResourceDetector();
   auto processor =
       std::make_unique<opentelemetry::sdk::trace::BatchSpanProcessor>(
-          google::cloud::otel::MakeTraceExporter(
-              std::move(project),
-              google::cloud::Options{}.set<gc::LoggingComponentsOption>(
-                  {"rpc"})),
+          google::cloud::otel::MakeTraceExporter(std::move(project),
+                                                 google::cloud::Options{}),
           opentelemetry::sdk::trace::BatchSpanProcessorOptions{
               .max_queue_size = vm["max-queue-size"].as<std::size_t>()});
   auto provider = std::make_shared<opentelemetry::sdk::trace::TracerProvider>(
@@ -349,6 +347,30 @@ auto otel_sv(std::string_view s) {
   return opentelemetry::nostd::string_view(s.data(), s.size());
 }
 
+auto make_common_attributes(config const& cfg,
+                            iteration_config const& iteration,
+                            std::string_view op) {
+  return std::vector<std::pair<opentelemetry::nostd::string_view,
+                               opentelemetry::common::AttributeValue>>{
+      {"ssb.app", otel_sv(kAppName)},
+      {"ssb.op", otel_sv(op)},
+      {"ssb.language", "cpp"},
+      {"ssb.experiment", iteration.experiment},
+      {"ssb.object-size", iteration.object_size},
+      {"ssb.object-count", iteration.object_count},
+      {"ssb.worker-count", iteration.worker_count},
+      {"ssb.worker-count", iteration.repeated_read_count},
+      {"ssb.deployment", cfg.deployment},
+      {"ssb.instance", cfg.instance},
+      {"ssb.region", cfg.region},
+      {"ssb.version", cfg.ssb_version},
+      {"ssb.version.sdk", cfg.sdk_version},
+      {"ssb.version.grpc", cfg.grpc_version},
+      {"ssb.version.protobuf", cfg.protobuf_version},
+      {"ssb.version.http-client", cfg.http_client_version},
+  };
+}
+
 class usage {
  public:
   usage()
@@ -386,27 +408,10 @@ class usage {
   void record_single(config const& cfg, iteration_config const& iteration,
                      std::string_view op) const {
     auto const elapsed = elapsed_seconds();
-    cfg.latency->Record(
-        elapsed.count(),
-        opentelemetry::common::MakeAttributes({
-            {"ssb.app", otel_sv(kAppName)},
-            {"ssb.language", "cpp"},
-            {"ssb.experiment", iteration.experiment},
-            {"ssb.op", otel_sv(op)},
-            {"ssb.object-size", iteration.object_size},
-            {"ssb.object-count", iteration.object_count},
-            {"ssb.worker-count", iteration.worker_count},
-            {"ssb.worker-count", iteration.repeated_read_count},
-            {"ssb.deployment", cfg.deployment},
-            {"ssb.instance", cfg.instance},
-            {"ssb.region", cfg.region},
-            {"ssb.version", cfg.ssb_version},
-            {"ssb.version.sdk", cfg.sdk_version},
-            {"ssb.version.grpc", cfg.grpc_version},
-            {"ssb.version.protobuf", cfg.protobuf_version},
-            {"ssb.version.http-client", cfg.http_client_version},
-        }),
-        opentelemetry::context::Context{});
+    cfg.latency->Record(elapsed.count(),
+                        opentelemetry::common::MakeAttributes(
+                            make_common_attributes(cfg, iteration, op)),
+                        opentelemetry::context::Context{});
   }
 
  private:
@@ -467,31 +472,6 @@ void run(config cfg, named_experiments experiments) {
         .repeated_read_count = pick_one(generator, cfg.repeated_read_counts),
     };
 
-    auto common_attributes =
-        std::vector<std::pair<opentelemetry::nostd::string_view,
-                              opentelemetry::common::AttributeValue>>{
-            {"ssb.app", otel_sv(kAppName)},
-            {"ssb.language", "cpp"},
-            {"ssb.experiment", iteration.experiment},
-            {"ssb.object-size", iteration.object_size},
-            {"ssb.object-count", iteration.object_count},
-            {"ssb.worker-count", iteration.worker_count},
-            {"ssb.worker-count", iteration.repeated_read_count},
-            {"ssb.deployment", cfg.deployment},
-            {"ssb.instance", cfg.instance},
-            {"ssb.region", cfg.region},
-            {"ssb.version", cfg.ssb_version},
-            {"ssb.version.sdk", cfg.sdk_version},
-            {"ssb.version.grpc", cfg.grpc_version},
-            {"ssb.version.protobuf", cfg.protobuf_version},
-            {"ssb.version.http-client", cfg.http_client_version},
-        };
-
-    auto with_op = [common_attributes](opentelemetry::nostd::string_view op) {
-      auto attr = common_attributes;
-      attr.emplace_back("ssb.op", op);
-      return attr;
-    };
     auto as_attributes = [](auto const& attr) {
       using value_type = typename std::decay_t<decltype(attr)>::value_type;
       using span_t = opentelemetry::nostd::span<value_type const>;
@@ -500,7 +480,7 @@ void run(config cfg, named_experiments experiments) {
     };
     // Run the upload step in its own scope
     auto const objects = [&] {
-      auto attributes = with_op("UPLOAD");
+      auto attributes = make_common_attributes(cfg, iteration, "UPLOAD");
       auto span =
           tracer->StartSpan("ssb::maxt::upload",
                             opentelemetry::common::MakeAttributes(attributes));
@@ -516,7 +496,8 @@ void run(config cfg, named_experiments experiments) {
     }();
 
     {
-      auto attributes = with_op("DOWNLOAD");
+      auto const attributes =
+          make_common_attributes(cfg, iteration, "DOWNLOAD");
       std::vector<object_metadata> repeated;
       repeated.reserve(iteration.repeated_read_count * objects.size());
       for (int i = 0; i != iteration.repeated_read_count; ++i) {
@@ -535,9 +516,10 @@ void run(config cfg, named_experiments experiments) {
     }
 
     {
-      auto span = tracer->StartSpan(
-          "ssb::maxt::cleanup",
-          opentelemetry::common::MakeAttributes(with_op("CLEANUP")));
+      auto const attributes = make_common_attributes(cfg, iteration, "CLEANUP");
+      auto span =
+          tracer->StartSpan("ssb::maxt::cleanup",
+                            opentelemetry::common::MakeAttributes(attributes));
       auto active = tracer->WithActiveSpan(span);
       runner->cleanup(cfg, iteration, objects);
       span->End();
@@ -550,7 +532,18 @@ auto upload_objects(
     opentelemetry::nostd::shared_ptr<opentelemetry::trace::Span> span,
     gc::storage::Client client, int task_id,
     std::vector<std::string> const& object_names, random_data data) {
-  auto const scope = opentelemetry::trace::Scope(span);
+  // We easily go over the spans-per-trace limit (1,000) if we keep all the
+  // spans connected to the root span.
+  auto tracer = opentelemetry::trace::Provider::GetTracerProvider()->GetTracer(
+      otel_sv(kAppName));
+  auto const parent_scope = tracer->WithActiveSpan(span);
+
+  auto task_span =
+      tracer->StartSpan(std::format("ssb::maxt::upload/{}", task_id),
+                        opentelemetry::common::MakeAttributes(
+                            make_common_attributes(cfg, iteration, "UPLOAD")));
+  auto const scope = tracer->WithActiveSpan(task_span);
+
   std::vector<object_metadata> objects;
   for (std::size_t i = 0; i != object_names.size(); ++i) {
     if (i % iteration.worker_count != task_id) continue;
@@ -577,7 +570,15 @@ auto download_objects(
     opentelemetry::nostd::shared_ptr<opentelemetry::trace::Span> span,
     gc::storage::Client client, int task_id,
     std::vector<object_metadata> const& objects) {
-  auto const scope = opentelemetry::trace::Scope(span);
+  auto tracer = opentelemetry::trace::Provider::GetTracerProvider()->GetTracer(
+      otel_sv(kAppName));
+  auto const parent_scope = tracer->WithActiveSpan(span);
+
+  auto task_span = tracer->StartSpan(
+      std::format("ssb::maxt::download/{}", task_id),
+      opentelemetry::common::MakeAttributes(
+          make_common_attributes(cfg, iteration, "DOWNLOAD")));
+  auto const scope = tracer->WithActiveSpan(task_span);
   auto total_bytes = std::int64_t{0};
   std::vector<char> buffer(16 * kMiB);
   for (std::size_t i = 0; i != objects.size(); ++i) {
@@ -687,12 +688,22 @@ gc::future<std::vector<object_metadata>> async_upload_objects(
     opentelemetry::nostd::shared_ptr<opentelemetry::trace::Span> span,
     gc::storage_experimental::AsyncClient client, int task_id,
     std::vector<std::string> const& object_names, random_data data) {
+  // We easily go over the spans-per-trace limit (1,000) if we keep all the
+  // spans connected to the root span.
+  auto tracer = opentelemetry::trace::Provider::GetTracerProvider()->GetTracer(
+      otel_sv(kAppName));
+      auto const parent_scope = tracer->WithActiveSpan(span);
+
+  auto task_span =
+      tracer->StartSpan(std::format("ssb::maxt::upload/{}", task_id),
+                        opentelemetry::common::MakeAttributes(
+                            make_common_attributes(cfg, iteration, "UPLOAD")));
   gc::storage_experimental::BucketName bucket_name(cfg.bucket_name);
   std::vector<object_metadata> objects;
   for (std::size_t i = 0; i != object_names.size(); ++i) {
     if (i % iteration.worker_count != task_id) continue;
 
-    auto scope = opentelemetry::trace::Scope(span);
+    auto const scope = tracer->WithActiveSpan(task_span);
     auto t = usage();
     auto [writer, token] =
         (co_await client.StartUnbufferedUpload(bucket_name, object_names[i]))
@@ -719,11 +730,19 @@ gc::future<std::int64_t> async_download_objects(
     opentelemetry::nostd::shared_ptr<opentelemetry::trace::Span> span,
     gc::storage_experimental::AsyncClient client, int task_id,
     std::vector<object_metadata> const& objects) {
+  auto tracer = opentelemetry::trace::Provider::GetTracerProvider()->GetTracer(
+      otel_sv(kAppName));
+auto const parent_scope = tracer->WithActiveSpan(span);
+  
+  auto task_span = tracer->StartSpan(
+      std::format("ssb::maxt::download/{}", task_id),
+      opentelemetry::common::MakeAttributes(
+          make_common_attributes(cfg, iteration, "DOWNLOAD")));
   auto total_bytes = std::int64_t{0};
   for (std::size_t i = 0; i != objects.size(); ++i) {
     if (i % iteration.worker_count != task_id) continue;
     auto const& object = objects[i];
-    auto scope = opentelemetry::trace::Scope(span);
+    auto const scope = tracer->WithActiveSpan(task_span);
     auto t = usage();
     auto request = google::storage::v2::ReadObjectRequest{};
     request.set_bucket(object.bucket_name);
