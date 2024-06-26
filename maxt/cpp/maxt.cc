@@ -809,13 +809,20 @@ class async_experiment : public experiment {
 };
 
 auto options(boost::program_options::variables_map const& vm) {
+  using namespace std::chrono_literals;
   auto enable_tracing = vm["tracing-rate"].as<double>() != 0.0;
   return gc::Options{}
+      .set<gc::storage::TransferStallMinimumRateOption>(10 * kMiB)
+      .set<gc::storage::TransferStallTimeoutOption>(1s)
+      .set<gc::storage::DownloadStallMinimumRateOption>(20 * kMiB)
+      .set<gc::storage::DownloadStallTimeoutOption>(1s)
       .set<gc::storage::UploadBufferSizeOption>(256 * kKiB)
       .set<gc::OpenTelemetryTracingOption>(enable_tracing);
 }
 
-auto make_json(boost::program_options::variables_map const& vm) { return gc::storage::Client(options(vm)); }
+auto make_json(boost::program_options::variables_map const& vm) {
+  return gc::storage::Client(options(vm));
+}
 
 auto grpc_options(boost::program_options::variables_map const& vm,
                   std::string prefix, std::string_view endpoint) {
