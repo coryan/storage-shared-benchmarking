@@ -245,7 +245,9 @@ int main(int argc, char* argv[]) try {
       *std::max_element(object_sizes.begin(), object_sizes.end());
   auto data = std::make_shared<std::vector<char>>(data_buffer_size);
   std::generate(data->begin(), data->end(), [&generator]() {
-    return std::uniform_int_distribution<char>(0, 255)(generator);
+    return std::uniform_int_distribution<char>(
+        std::numeric_limits<char>::min(),
+        std::numeric_limits<char>::max())(generator);
   });
 
   auto cfg = config{
@@ -524,8 +526,7 @@ std::string discover_region() {
   auto detector = google::cloud::otel::MakeResourceDetector();
   auto detected_resource = detector->Detect();
   for (auto const& [k, v] : detected_resource.GetAttributes()) {
-    if (k == sc::kCloudRegion) 
-      return std::get<std::string>(v);
+    if (k == sc::kCloudRegion) return std::get<std::string>(v);
   }
   return std::string("unknown");
 }
