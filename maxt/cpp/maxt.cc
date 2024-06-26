@@ -15,9 +15,9 @@
 #include <google/cloud/grpc_options.h>
 #include <google/cloud/internal/build_info.h>
 #include <google/cloud/internal/compiler_info.h>
-#include <google/cloud/opentelemetry/configure_basic_tracing.h>
 #include <google/cloud/opentelemetry/monitoring_exporter.h>
 #include <google/cloud/opentelemetry/resource_detector.h>
+#include <google/cloud/opentelemetry/trace_exporter.h>
 #include <google/cloud/opentelemetry_options.h>
 #include <google/cloud/project.h>
 #include <google/cloud/storage/async/client.h>
@@ -43,6 +43,10 @@
 #include <opentelemetry/sdk/metrics/view/meter_selector_factory.h>
 #include <opentelemetry/sdk/metrics/view/view_factory.h>
 #include <opentelemetry/sdk/resource/semantic_conventions.h>
+#include <opentelemetry/sdk/trace/batch_span_processor.h>
+#include <opentelemetry/sdk/trace/batch_span_processor_options.h>
+#include <opentelemetry/sdk/trace/samplers/trace_id_ratio_factory.h>
+#include <opentelemetry/sdk/trace/tracer_provider.h>
 #include <opentelemetry/trace/provider.h>
 #include <algorithm>
 #include <atomic>
@@ -170,6 +174,28 @@ std::string discover_region();
 std::unique_ptr<opentelemetry::metrics::MeterProvider> make_meter_provider(
     google::cloud::Project const& project, std::string const& instance);
 
+std::shared_ptr<opentelemetry::trace::TracerProvider> make_tracer_provider(
+    boost::program_options::variables_map const& vm) {
+  auto ratio = vm["tracing-rate"].as<double>();
+  if (ratio == 0.0) return {};
+  auto project = google::cloud::Project(vm["project-id"].as<std::string>());
+  auto detector = google::cloud::otel::MakeResourceDetector();
+  auto processor =
+      std::make_unique<opentelemetry::sdk::trace::BatchSpanProcessor>(
+          google::cloud::otel::MakeTraceExporter(std::move(project),
+                                                 google::cloud::Options{}),
+          opentelemetry::sdk::trace::BatchSpanProcessorOptions{
+              .max_queue_size = vm["max-queue-size"].as<std::size_t>()});
+  auto provider = std::make_shared<opentelemetry::sdk::trace::TracerProvider>(
+      std::move(processor), detector->Detect(),
+      opentelemetry::sdk::trace::TraceIdRatioBasedSamplerFactory::Create(
+          ratio));
+  opentelemetry::trace::Provider::SetTracerProvider(
+      opentelemetry::nostd::shared_ptr<opentelemetry::trace::TracerProvider>(
+          provider));
+  return provider;
+}
+
 auto make_prng_bits_generator() {
   // Random number initialization in C++ is more tedious than it should be.
   // First you get some entropy from the random device. We don't need too much,
@@ -214,15 +240,11 @@ int main(int argc, char* argv[]) try {
                            });
   };
 
-  auto const tracing = gc::otel::ConfigureBasicTracing(
-      project,
-      gc::Options{}.set<gc::otel::BasicTracingRateOption>(tracing_rate));
-
-  auto provider =
+  auto tracer_provider = make_tracer_provider(vm);
+  auto meter_provider =
       make_meter_provider(google::cloud::Project(project), instance);
-
-  // Create a histogram to capture the performance results.
-  auto meter = provider->GetMeter(std::string{kAppName}, kVersion, kSchema);
+  auto meter =
+      meter_provider->GetMeter(std::string{kAppName}, kVersion, kSchema);
   histogram_ptr latency = meter->CreateDoubleHistogram(
       kLatencyHistogramName, kLatencyDescription, kLatencyHistogramUnit);
   histogram_ptr throughput = meter->CreateDoubleHistogram(
@@ -1113,7 +1135,7 @@ boost::program_options::variables_map parse_args(int argc, char* argv[]) {
        " project as Cloud Monitoring metrics and Cloud Trace traces.")  //
       ("tracing-rate", po::value<double>()->default_value(kDefaultSampleRate),
        "otel::BasicTracingRateOption value")  //
-      ("max-queue-size", po::value<int>()->default_value(2048),
+      ("max-queue-size", po::value<std::size_t>()->default_value(1'000'000),
        "set the max queue size for open telemetery")  //
       ;
 
