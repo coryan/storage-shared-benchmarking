@@ -532,11 +532,11 @@ auto upload_objects(
     opentelemetry::nostd::shared_ptr<opentelemetry::trace::Span> span,
     gc::storage::Client client, int task_id,
     std::vector<std::string> const& object_names, random_data data) {
-  // We easily go over the spans-per-trace limit (1,000) if we keep all the
-  // spans connected to the root span.
   auto tracer = opentelemetry::trace::Provider::GetTracerProvider()->GetTracer(
       otel_sv(kAppName));
-  auto const parent_scope = tracer->WithActiveSpan(span);
+  // We easily go over the spans-per-trace limit (1,000) if we keep all the
+  // spans connected to the root span.
+  //   auto const parent_scope = tracer->WithActiveSpan(span);
 
   auto task_span =
       tracer->StartSpan(std::format("ssb::maxt::upload/{}", task_id),
@@ -688,11 +688,11 @@ gc::future<std::vector<object_metadata>> async_upload_objects(
     opentelemetry::nostd::shared_ptr<opentelemetry::trace::Span> span,
     gc::storage_experimental::AsyncClient client, int task_id,
     std::vector<std::string> const& object_names, random_data data) {
-  // We easily go over the spans-per-trace limit (1,000) if we keep all the
-  // spans connected to the root span.
   auto tracer = opentelemetry::trace::Provider::GetTracerProvider()->GetTracer(
       otel_sv(kAppName));
-      auto const parent_scope = tracer->WithActiveSpan(span);
+  // We easily go over the spans-per-trace limit (1,000) if we keep all the
+  // spans connected to the root span.
+  //      auto const parent_scope = tracer->WithActiveSpan(span);
 
   auto task_span =
       tracer->StartSpan(std::format("ssb::maxt::upload/{}", task_id),
