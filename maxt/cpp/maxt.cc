@@ -182,8 +182,10 @@ std::shared_ptr<opentelemetry::trace::TracerProvider> make_tracer_provider(
   auto detector = google::cloud::otel::MakeResourceDetector();
   auto processor =
       std::make_unique<opentelemetry::sdk::trace::BatchSpanProcessor>(
-          google::cloud::otel::MakeTraceExporter(std::move(project),
-                                                 google::cloud::Options{}),
+          google::cloud::otel::MakeTraceExporter(
+              std::move(project),
+              google::cloud::Options{}.set<gc::LoggingComponentsOption>(
+                  {"rpc"})),
           opentelemetry::sdk::trace::BatchSpanProcessorOptions{
               .max_queue_size = vm["max-queue-size"].as<std::size_t>()});
   auto provider = std::make_shared<opentelemetry::sdk::trace::TracerProvider>(
