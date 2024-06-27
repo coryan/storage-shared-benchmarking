@@ -47,7 +47,9 @@ if (ERROR_CODE)
 endif ()
 
 add_executable(maxt maxt.cc)
+set_target_properties(maxt PROPERTIES CXX_EXTENSIONS OFF)
 target_compile_features(maxt PRIVATE cxx_std_20)
+target_sources(maxt PUBLIC FILE_SET  CXX_MODULES FILES parse_args.cc)
 target_compile_definitions(
     maxt PRIVATE SSB_PROTOBUF_VERSION="${Protobuf_VERSION}"
                  SSB_VERSION="${SSB_VERSION}")
