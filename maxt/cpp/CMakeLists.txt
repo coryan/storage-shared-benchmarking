@@ -46,10 +46,11 @@ if (ERROR_CODE)
     set(SSB_VERSION "unknown")
 endif ()
 
-add_executable(maxt maxt.cc)
+add_executable(maxt main.cc)
 set_target_properties(maxt PROPERTIES CXX_EXTENSIONS OFF)
 target_compile_features(maxt PRIVATE cxx_std_20)
-target_sources(maxt PUBLIC FILE_SET  CXX_MODULES FILES parse_args.cc)
+target_sources(maxt PUBLIC FILE_SET CXX_MODULES FILES # cmake-format: sorted
+                           maxt.cc impl.cc constants.cc parse_args.cc)
 target_compile_definitions(
     maxt PRIVATE SSB_PROTOBUF_VERSION="${Protobuf_VERSION}"
                  SSB_VERSION="${SSB_VERSION}")

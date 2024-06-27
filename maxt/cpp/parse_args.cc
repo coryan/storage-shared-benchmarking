@@ -16,22 +16,14 @@ module;
 #include <boost/program_options.hpp>
 #include <format>
 #include <iostream>
+#include <memory>
 #include <string_view>
 #include <thread>
+#include <tuple>
+#include <utility>
 
-export module maxt;
-
-using namespace std::literals;
-
-export auto constexpr kKB = 1'000;
-export auto constexpr kMB = kKB * kKB;
-export auto constexpr kKiB = 1024;
-export auto constexpr kMiB = kKiB * kKiB;
-export auto constexpr kJson = "JSON"sv;
-export auto constexpr kGrpcCfe = "GRPC+CFE"sv;
-export auto constexpr kGrpcDp = "GRPC+DP"sv;
-export auto constexpr kAsyncGrpcCfe = "ASYNC+GRPC+CFE"sv;
-export auto constexpr kAsyncGrpcDp = "ASYNC+GRPC+DP"sv;
+export module maxt:parse_args;
+import :constants;
 
 auto constexpr kDefaultIterations = 1'000'000;
 auto constexpr kDefaultSampleRate = 0.05;
