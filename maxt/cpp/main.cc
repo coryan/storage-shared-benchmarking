@@ -12,7 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import maxt;
 #include <google/cloud/internal/build_info.h>
 #include <google/cloud/internal/compiler_info.h>
 #include <boost/lexical_cast.hpp>
@@ -24,6 +23,8 @@ import maxt;
 #include <stdexcept>
 #include <thread>
 #include <vector>
+
+import maxt;
 
 namespace gc = google::cloud;
 
