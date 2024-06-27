@@ -12,18 +12,19 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-FROM alpine:3.20 AS build
+FROM fedora:40 AS build
 
 # Install the minimal development tools:
-RUN apk update && \
-    apk add bash ca-certificates cmake curl git \
-        gcc g++ make ninja-build ninja-is-really-ninja tar unzip zip zlib-dev
+RUN dnf makecache && \
+    dnf install -y cmake curl findutils gcc-c++ git make ninja-build \
+        patch unzip tar wget zip
 
 # We compile Abseil, Protobuf and gRPC from source to pick the latest versions
-# and to enable OTel support in gRPC.
-RUN apk update && \
-    apk add crc32c-dev c-ares-dev curl-dev \
-        nlohmann-json openssl-dev re2-dev
+# and to enable OTel support in gRPC. But for other libraries the Fedora
+# packages are recent enough.
+RUN dnf makecache && \
+    dnf install -y boost-devel c-ares-devel google-crc32c-devel json-devel \
+        libcurl-devel openssl-devel re2-devel zlib-devel
 
 WORKDIR /var/tmp/build
 RUN curl -fsSL https://github.com/abseil/abseil-cpp/archive/20240116.2.tar.gz | \
@@ -103,21 +104,22 @@ RUN curl -fsSL https://github.com/googleapis/google-cloud-cpp/archive/d9ffe826b7
     cmake --build .build && cmake --install .build && \
     rm -fr .build
 
-RUN apk update && \
-    apk add boost-dev
-
 # Update the ld.conf cache in case any libraries were installed in /usr/local/lib*
 RUN ldconfig /usr/local/lib*
+
+RUN dnf makecache && \
+    dnf install -y clang clang-tools-extra
 
 WORKDIR /var/tmp/build/maxt
 COPY .git/ /var/tmp/build/maxt/.git
 COPY maxt/ /var/tmp/build/maxt/maxt
-RUN cmake -G Ninja -S maxt/cpp -B .build -DCMAKE_BUILD_TYPE=Release && \
+RUN CXX=clang++ CC=clang cmake -G Ninja -S maxt/cpp -B .build -DCMAKE_BUILD_TYPE=Release && \
     cmake --build .build
 
-FROM alpine:3.20 AS deploy
+FROM fedora:40 AS deploy
 
-RUN apk update && \
-    apk add bash ca-certificates boost1.84-program_options libcurl crc32c re2
+RUN dnf makecache && \
+    dnf install -y boost c-ares libcurl google-crc32c re2 zlib && \
+    dnf clean all
 
 COPY --from=build /var/tmp/build/maxt/.build/maxt /r/maxt
