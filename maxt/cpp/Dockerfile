@@ -115,10 +115,10 @@ COPY maxt/ /var/tmp/build/maxt/maxt
 RUN CXX=clang++ CC=clang cmake -G Ninja -S maxt/cpp -B .build -DCMAKE_BUILD_TYPE=Release && \
     cmake --build .build
 
-FROM fedora:40 AS deploy
+FROM registry.fedoraproject.org/fedora-minimal:40 AS deploy
 
-RUN dnf makecache && \
-    dnf install -y boost c-ares libcurl google-crc32c re2 zlib && \
-    dnf clean all
+RUN microdnf makecache && \
+    microdnf install -y boost c-ares libcurl google-crc32c re2 zlib && \
+    microdnf clean all
 
 COPY --from=build /var/tmp/build/maxt/.build/maxt /r/maxt
