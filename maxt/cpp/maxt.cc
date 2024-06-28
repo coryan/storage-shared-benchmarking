@@ -525,11 +525,35 @@ void run(config cfg, named_experiments experiments) {
   }
 }
 
+template <typename T>
+class work_queue {
+ public:
+  work_queue() = default;
+  explicit work_queue(std::vector<T> items) : items_(std::move(items)) {}
+
+  std::optional<T> next() {
+    std::lock_guard lk(mu_);
+    if (items_.empty()) return std::nullopt;
+    auto v = std::move(items_.back());
+    items_.pop_back();
+    return v;
+  }
+
+ private:
+  mutable std::mutex mu_;
+  std::vector<T> items_;
+};
+
+template <typename T>
+auto make_work_queue(std::vector<T> items) {
+  return std::make_shared<work_queue<T>>(std::move(items));
+}
+
 auto upload_objects(
     config const& cfg, iteration_config const& iteration,
     opentelemetry::nostd::shared_ptr<opentelemetry::trace::Span> span,
     gc::storage::Client client, int task_id,
-    std::vector<std::string> const& object_names, random_data data) {
+    std::shared_ptr<work_queue<std::string>> object_names, random_data data) {
   auto tracer = opentelemetry::trace::Provider::GetTracerProvider()->GetTracer(
       otel_sv(kAppName));
   // We easily go over the spans-per-trace limit (1,000) if we keep all the
@@ -543,17 +567,16 @@ auto upload_objects(
   auto const task_scope = tracer->WithActiveSpan(task_span);
 
   std::vector<object_metadata> objects;
-  for (std::size_t i = 0; i != object_names.size(); ++i) {
-    if (i % iteration.worker_count != task_id) continue;
+  auto i = 0;
+  while (auto name = object_names->next()) {
     auto upload_span = tracer->StartSpan(
-        std::format("ssb::maxt::upload/{}/{}", task_id, i),
+        std::format("ssb::maxt::upload/{}/{}", task_id, i++),
         opentelemetry::common::MakeAttributes(
             make_common_attributes(cfg, iteration, "UPLOAD")));
     auto const upload_scope = tracer->WithActiveSpan(upload_span);
 
-    auto const& name = object_names[i];
     auto t = usage();
-    auto os = client.WriteObject(cfg.bucket_name, name);
+    auto os = client.WriteObject(cfg.bucket_name, *name);
     for (std::int64_t offset = 0; offset < iteration.object_size;) {
       auto n =
           std::min<std::int64_t>(data->size(), iteration.object_size - offset);
@@ -573,7 +596,7 @@ auto download_objects(
     config const& cfg, iteration_config const& iteration,
     opentelemetry::nostd::shared_ptr<opentelemetry::trace::Span> span,
     gc::storage::Client client, int task_id,
-    std::vector<object_metadata> const& objects) {
+    std::shared_ptr<work_queue<object_metadata>> objects) {
   auto tracer = opentelemetry::trace::Provider::GetTracerProvider()->GetTracer(
       otel_sv(kAppName));
   // We easily go over the spans-per-trace limit (1,000) if we keep all the
@@ -586,18 +609,17 @@ auto download_objects(
           make_common_attributes(cfg, iteration, "DOWNLOAD")));
   auto const task_scope = tracer->WithActiveSpan(task_span);
   auto total_bytes = std::int64_t{0};
+  auto i = 0;
   std::vector<char> buffer(16 * kMiB);
-  for (std::size_t i = 0; i != objects.size(); ++i) {
-    if (i % iteration.worker_count != task_id) continue;
+  while (auto meta = objects->next()) {
     auto download_span = tracer->StartSpan(
-        std::format("ssb::maxt::download/{}/{}", task_id, i),
+        std::format("ssb::maxt::download/{}/{}", task_id, i++),
         opentelemetry::common::MakeAttributes(
             make_common_attributes(cfg, iteration, "DOWNLOAD")));
     auto const download_scope = tracer->WithActiveSpan(download_span);
-    auto const& meta = objects[i];
     auto t = usage();
-    auto is = client.ReadObject(meta.bucket_name, meta.object_name,
-                                gc::storage::Generation(meta.generation));
+    auto is = client.ReadObject(meta->bucket_name, meta->object_name,
+                                gc::storage::Generation(meta->generation));
     while (!is.bad() && !is.eof()) {
       is.read(buffer.data(), buffer.size());
       total_bytes += is.gcount();
@@ -632,14 +654,14 @@ class sync_experiment : public experiment {
         opentelemetry::trace::Provider::GetTracerProvider()->GetTracer(
             otel_sv(kAppName));
     auto span = tracer->GetCurrentSpan();
-    auto object_names = generate_names(generator, iteration.object_count);
+    auto queue =
+        make_work_queue(generate_names(generator, iteration.object_count));
 
     std::vector<std::future<std::vector<object_metadata>>> tasks(
         iteration.worker_count);
     std::generate(tasks.begin(), tasks.end(), [&, i = 0]() mutable {
       return std::async(std::launch::async, upload_objects, std::cref(cfg),
-                        std::cref(iteration), span, client_, i++,
-                        std::cref(object_names), data);
+                        std::cref(iteration), span, client_, i++, queue, data);
     });
     std::vector<object_metadata> result;
     for (auto& t : tasks) try {
@@ -657,12 +679,12 @@ class sync_experiment : public experiment {
         opentelemetry::trace::Provider::GetTracerProvider()->GetTracer(
             otel_sv(kAppName));
     auto span = tracer->GetCurrentSpan();
+    auto queue = make_work_queue(std::move(objects));
 
     std::vector<std::future<std::int64_t>> tasks(iteration.worker_count);
     std::generate(tasks.begin(), tasks.end(), [&, i = 0]() mutable {
       return std::async(std::launch::async, download_objects, std::cref(cfg),
-                        std::cref(iteration), span, client_, i++,
-                        std::cref(objects));
+                        std::cref(iteration), span, client_, i++, queue);
     });
     auto result = std::int64_t{0};
     for (auto& t : tasks) try {
@@ -698,7 +720,7 @@ gc::future<std::vector<object_metadata>> async_upload_objects(
     config const& cfg, iteration_config const& iteration,
     opentelemetry::nostd::shared_ptr<opentelemetry::trace::Span> span,
     gc::storage_experimental::AsyncClient client, int task_id,
-    std::vector<std::string> const& object_names, random_data data) {
+    std::shared_ptr<work_queue<std::string>> object_names, random_data data) {
   auto tracer = opentelemetry::trace::Provider::GetTracerProvider()->GetTracer(
       otel_sv(kAppName));
   // We easily go over the spans-per-trace limit (1,000) if we keep all the
@@ -711,18 +733,17 @@ gc::future<std::vector<object_metadata>> async_upload_objects(
                             make_common_attributes(cfg, iteration, "UPLOAD")));
   gc::storage_experimental::BucketName bucket_name(cfg.bucket_name);
   std::vector<object_metadata> objects;
-  for (std::size_t i = 0; i != object_names.size(); ++i) {
-    if (i % iteration.worker_count != task_id) continue;
-
+  auto i = 0;
+  while (auto object_name = object_names->next()) {
     auto const scope = tracer->WithActiveSpan(task_span);
     auto upload_span = tracer->StartSpan(
-        std::format("ssb::maxt::upload/{}/{}", task_id, i),
+        std::format("ssb::maxt::upload/{}/{}", task_id, i++),
         opentelemetry::common::MakeAttributes(
             make_common_attributes(cfg, iteration, "UPLOAD")));
     auto const upload_scope = tracer->WithActiveSpan(upload_span);
     auto t = usage();
     auto [writer, token] =
-        (co_await client.StartUnbufferedUpload(bucket_name, object_names[i]))
+        (co_await client.StartUnbufferedUpload(bucket_name, *object_name))
             .value();
     auto offset = std::int64_t{0};
     while (offset < iteration.object_size) {
@@ -745,7 +766,7 @@ gc::future<std::int64_t> async_download_objects(
     config const& cfg, iteration_config const& iteration,
     opentelemetry::nostd::shared_ptr<opentelemetry::trace::Span> span,
     gc::storage_experimental::AsyncClient client, int task_id,
-    std::vector<object_metadata> const& objects) {
+    std::shared_ptr<work_queue<object_metadata>> objects) {
   auto tracer = opentelemetry::trace::Provider::GetTracerProvider()->GetTracer(
       otel_sv(kAppName));
   // We easily go over the spans-per-trace limit (1,000) if we keep all the
@@ -757,20 +778,19 @@ gc::future<std::int64_t> async_download_objects(
       opentelemetry::common::MakeAttributes(
           make_common_attributes(cfg, iteration, "DOWNLOAD")));
   auto total_bytes = std::int64_t{0};
-  for (std::size_t i = 0; i != objects.size(); ++i) {
-    if (i % iteration.worker_count != task_id) continue;
-    auto const& object = objects[i];
+  auto i = 0;
+  while (auto object = objects->next()) {
     auto const task_scope = tracer->WithActiveSpan(task_span);
     auto download_span = tracer->StartSpan(
-        std::format("ssb::maxt::download/{}/{}", task_id, i),
+        std::format("ssb::maxt::download/{}/{}", task_id, i++),
         opentelemetry::common::MakeAttributes(
             make_common_attributes(cfg, iteration, "DOWNLOAD")));
     auto const download_scope = tracer->WithActiveSpan(download_span);
     auto t = usage();
     auto request = google::storage::v2::ReadObjectRequest{};
-    request.set_bucket(object.bucket_name);
-    request.set_object(object.object_name);
-    request.set_generation(object.generation);
+    request.set_bucket(object->bucket_name);
+    request.set_object(object->object_name);
+    request.set_generation(object->generation);
     auto [reader, token] =
         (co_await client.ReadObject(std::move(request))).value();
     while (token.valid()) {
@@ -814,7 +834,8 @@ class async_experiment : public experiment {
             otel_sv(kAppName));
     auto span = tracer->GetCurrentSpan();
 
-    auto object_names = generate_names(generator, iteration.object_count);
+    auto queue =
+        make_work_queue(generate_names(generator, iteration.object_count));
 
     std::vector<gc::future<std::vector<object_metadata>>> tasks(
         iteration.worker_count);
@@ -822,8 +843,8 @@ class async_experiment : public experiment {
       // Set the span before starting a coroutine. Otherwise we nest the span
       // with the suspend/resume callbacks for the coroutine.
       auto const scope = tracer->WithActiveSpan(span);
-      return async_upload_objects(cfg, iteration, span, client_, i++,
-                                  std::cref(object_names), data);
+      return async_upload_objects(cfg, iteration, span, client_, i++, queue,
+                                  data);
     });
     std::vector<object_metadata> result;
     for (auto& t : tasks) try {
@@ -842,13 +863,14 @@ class async_experiment : public experiment {
             otel_sv(kAppName));
     auto span = tracer->GetCurrentSpan();
 
+    auto queue = make_work_queue(std::move(objects));
+
     std::vector<gc::future<std::int64_t>> tasks(iteration.worker_count);
     std::generate(tasks.begin(), tasks.end(), [&, i = 0]() mutable {
       // Set the span before starting a coroutine. Otherwise we nest the span
       // with the suspend/resume callbacks for the coroutine.
       auto const scope = tracer->WithActiveSpan(span);
-      return async_download_objects(cfg, iteration, span, client_, i++,
-                                    std::cref(objects));
+      return async_download_objects(cfg, iteration, span, client_, i++, queue);
     });
     auto result = std::int64_t{0};
     for (auto& t : tasks) try {
@@ -890,7 +912,7 @@ auto options(boost::program_options::variables_map const& vm) {
       .set<gc::storage::TransferStallMinimumRateOption>(10 * kMiB)
       .set<gc::storage::TransferStallTimeoutOption>(10s)
       .set<gc::storage::DownloadStallMinimumRateOption>(20 * kMiB)
-      .set<gc::storage::DownloadStallTimeoutOption>(10s)
+      .set<gc::storage::DownloadStallTimeoutOption>(1s)
       .set<gc::storage::UploadBufferSizeOption>(256 * kKiB)
       .set<gc::OpenTelemetryTracingOption>(enable_tracing);
 }
@@ -1050,9 +1072,9 @@ auto make_memory_histogram_boundaries() {
   // Cloud Monitoring only supports up to 200 buckets per histogram, we have
   // to choose them carefully.
   std::vector<double> boundaries;
-  // We expect the library to use less memory than the transferred size, that is
-  // why we stream the data. Use exponentially growing bucket sizes, since we
-  // have no better ideas.
+  // We expect the library to use less memory than the transferred size, that
+  // is why we stream the data. Use exponentially growing bucket sizes, since
+  // we have no better ideas.
   auto boundary = 0.0;
   auto increment = 1.0 / 16.0;
   for (int i = 0; i != 200; ++i) {
