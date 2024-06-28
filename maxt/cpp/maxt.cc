@@ -74,8 +74,6 @@ namespace {
 
 using namespace std::literals;
 
-auto constexpr kKB = 1'000;
-auto constexpr kMB = kKB * kKB;
 auto constexpr kKiB = 1024;
 auto constexpr kMiB = kKiB * kKiB;
 auto constexpr kRandomDataSize = 32 * kMiB;
@@ -154,6 +152,7 @@ struct iteration_config {
 };
 
 struct experiment {
+  virtual ~experiment() = default;
   virtual std::vector<object_metadata> upload(std::mt19937_64& generator,
                                               config const& cfg,
                                               iteration_config const& iteration,
@@ -227,7 +226,6 @@ int main(int argc, char* argv[]) try {
 
   auto const bucket_name = vm["bucket"].as<std::string>();
   auto const deployment = vm["deployment"].as<std::string>();
-  auto const tracing_rate = vm["tracing-rate"].as<double>();
 
   auto join = [](auto collection) {
     if (collection.empty()) return std::string{};
@@ -542,11 +540,17 @@ auto upload_objects(
       tracer->StartSpan(std::format("ssb::maxt::upload/{}", task_id),
                         opentelemetry::common::MakeAttributes(
                             make_common_attributes(cfg, iteration, "UPLOAD")));
-  auto const scope = tracer->WithActiveSpan(task_span);
+  auto const task_scope = tracer->WithActiveSpan(task_span);
 
   std::vector<object_metadata> objects;
   for (std::size_t i = 0; i != object_names.size(); ++i) {
     if (i % iteration.worker_count != task_id) continue;
+    auto upload_span = tracer->StartSpan(
+        std::format("ssb::maxt::upload/{}/{}", task_id, i),
+        opentelemetry::common::MakeAttributes(
+            make_common_attributes(cfg, iteration, "UPLOAD")));
+    auto const upload_scope = tracer->WithActiveSpan(upload_span);
+
     auto const& name = object_names[i];
     auto t = usage();
     auto os = client.WriteObject(cfg.bucket_name, name);
@@ -578,11 +582,16 @@ auto download_objects(
       std::format("ssb::maxt::download/{}", task_id),
       opentelemetry::common::MakeAttributes(
           make_common_attributes(cfg, iteration, "DOWNLOAD")));
-  auto const scope = tracer->WithActiveSpan(task_span);
+  auto const task_scope = tracer->WithActiveSpan(task_span);
   auto total_bytes = std::int64_t{0};
   std::vector<char> buffer(16 * kMiB);
   for (std::size_t i = 0; i != objects.size(); ++i) {
     if (i % iteration.worker_count != task_id) continue;
+    auto download_span = tracer->StartSpan(
+        std::format("ssb::maxt::download/{}/{}", task_id, i),
+        opentelemetry::common::MakeAttributes(
+            make_common_attributes(cfg, iteration, "DOWNLOAD")));
+    auto const download_scope = tracer->WithActiveSpan(download_span);
     auto const& meta = objects[i];
     auto t = usage();
     auto is = client.ReadObject(meta.bucket_name, meta.object_name,
@@ -704,6 +713,11 @@ gc::future<std::vector<object_metadata>> async_upload_objects(
     if (i % iteration.worker_count != task_id) continue;
 
     auto const scope = tracer->WithActiveSpan(task_span);
+    auto upload_span = tracer->StartSpan(
+        std::format("ssb::maxt::upload/{}/{}", task_id, i),
+        opentelemetry::common::MakeAttributes(
+            make_common_attributes(cfg, iteration, "UPLOAD")));
+    auto const upload_scope = tracer->WithActiveSpan(upload_span);
     auto t = usage();
     auto [writer, token] =
         (co_await client.StartUnbufferedUpload(bucket_name, object_names[i]))
@@ -732,8 +746,8 @@ gc::future<std::int64_t> async_download_objects(
     std::vector<object_metadata> const& objects) {
   auto tracer = opentelemetry::trace::Provider::GetTracerProvider()->GetTracer(
       otel_sv(kAppName));
-auto const parent_scope = tracer->WithActiveSpan(span);
-  
+  auto const parent_scope = tracer->WithActiveSpan(span);
+
   auto task_span = tracer->StartSpan(
       std::format("ssb::maxt::download/{}", task_id),
       opentelemetry::common::MakeAttributes(
@@ -742,7 +756,12 @@ auto const parent_scope = tracer->WithActiveSpan(span);
   for (std::size_t i = 0; i != objects.size(); ++i) {
     if (i % iteration.worker_count != task_id) continue;
     auto const& object = objects[i];
-    auto const scope = tracer->WithActiveSpan(task_span);
+    auto const task_scope = tracer->WithActiveSpan(task_span);
+    auto download_span = tracer->StartSpan(
+        std::format("ssb::maxt::download/{}/{}", task_id, i),
+        opentelemetry::common::MakeAttributes(
+            make_common_attributes(cfg, iteration, "DOWNLOAD")));
+    auto const download_scope = tracer->WithActiveSpan(download_span);
     auto t = usage();
     auto request = google::storage::v2::ReadObjectRequest{};
     request.set_bucket(object.bucket_name);
@@ -796,6 +815,9 @@ class async_experiment : public experiment {
     std::vector<gc::future<std::vector<object_metadata>>> tasks(
         iteration.worker_count);
     std::generate(tasks.begin(), tasks.end(), [&, i = 0]() mutable {
+      // Set the span before starting a coroutine. Otherwise we nest the span
+      // with the suspend/resume callbacks for the coroutine.
+      auto const scope = tracer->WithActiveSpan(span);
       return async_upload_objects(cfg, iteration, span, client_, i++,
                                   std::cref(object_names), data);
     });
@@ -818,6 +840,9 @@ class async_experiment : public experiment {
 
     std::vector<gc::future<std::int64_t>> tasks(iteration.worker_count);
     std::generate(tasks.begin(), tasks.end(), [&, i = 0]() mutable {
+      // Set the span before starting a coroutine. Otherwise we nest the span
+      // with the suspend/resume callbacks for the coroutine.
+      auto const scope = tracer->WithActiveSpan(span);
       return async_download_objects(cfg, iteration, span, client_, i++,
                                     std::cref(objects));
     });
@@ -838,6 +863,9 @@ class async_experiment : public experiment {
 
     std::vector<gc::future<void>> tasks(iteration.worker_count);
     std::generate(tasks.begin(), tasks.end(), [&, i = 0]() mutable {
+      // Set the span before starting a coroutine. Otherwise we nest the span
+      // with the suspend/resume callbacks for the coroutine.
+      auto const scope = tracer->WithActiveSpan(span);
       return async_delete_objects(span, client_, iteration.worker_count, i++,
                                   std::cref(objects));
     });
@@ -856,9 +884,9 @@ auto options(boost::program_options::variables_map const& vm) {
   auto enable_tracing = vm["tracing-rate"].as<double>() != 0.0;
   return gc::Options{}
       .set<gc::storage::TransferStallMinimumRateOption>(10 * kMiB)
-      .set<gc::storage::TransferStallTimeoutOption>(1s)
+      .set<gc::storage::TransferStallTimeoutOption>(10s)
       .set<gc::storage::DownloadStallMinimumRateOption>(20 * kMiB)
-      .set<gc::storage::DownloadStallTimeoutOption>(1s)
+      .set<gc::storage::DownloadStallTimeoutOption>(10s)
       .set<gc::storage::UploadBufferSizeOption>(256 * kKiB)
       .set<gc::OpenTelemetryTracingOption>(enable_tracing);
 }
