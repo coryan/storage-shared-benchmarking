@@ -39,10 +39,8 @@ RUN curl -fsSL https://github.com/abseil/abseil-cpp/archive/20240116.2.tar.gz | 
     cmake --build .build && cmake --install .build && \
     rm -fr .build
         
-# Alpine does not include a package for OpenTelemetry, so we compile it from
-# source.
 WORKDIR /var/tmp/build/opentelemetry-cpp
-RUN curl -fsSL https://github.com/open-telemetry/opentelemetry-cpp/archive/v1.15.0.tar.gz | \
+RUN curl -fsSL https://github.com/open-telemetry/opentelemetry-cpp/archive/v1.16.0.tar.gz | \
     tar -xzf - --strip-components=1 && \
     cmake \
         -G Ninja -S . -B .build \
@@ -58,7 +56,7 @@ RUN curl -fsSL https://github.com/open-telemetry/opentelemetry-cpp/archive/v1.15
     rm -fr .build
 
 WORKDIR /var/tmp/build/protobuf
-RUN curl -fsSL https://github.com/protocolbuffers/protobuf/archive/v27.1.tar.gz | \
+RUN curl -fsSL https://github.com/protocolbuffers/protobuf/archive/v27.2.tar.gz | \
     tar -xzf - --strip-components=1 && \
     cmake \
         -GNinja -S . -B .build \
@@ -92,7 +90,7 @@ RUN curl -fsSL https://github.com/grpc/grpc/archive/v1.64.2.tar.gz | \
     rm -fr .build
 
 WORKDIR /var/tmp/build/google-cloud-cpp
-RUN curl -fsSL https://github.com/googleapis/google-cloud-cpp/archive/d9ffe826b7da40f8f7c6fda50749fb5e8edb29fd.tar.gz | \
+RUN curl -fsSL https://github.com/googleapis/google-cloud-cpp/archive/e4ed3a463b4b9b30dc931c1082ee4689d298c621.tar.gz | \
     tar -xzf - --strip-components=1 && \
     cmake \
       -G Ninja -S . -B .build \
