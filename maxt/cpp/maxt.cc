@@ -576,7 +576,9 @@ auto download_objects(
     std::vector<object_metadata> const& objects) {
   auto tracer = opentelemetry::trace::Provider::GetTracerProvider()->GetTracer(
       otel_sv(kAppName));
-  auto const parent_scope = tracer->WithActiveSpan(span);
+  // We easily go over the spans-per-trace limit (1,000) if we keep all the
+  // spans connected to the root span.
+  //   auto const parent_scope = tracer->WithActiveSpan(span);
 
   auto task_span = tracer->StartSpan(
       std::format("ssb::maxt::download/{}", task_id),
@@ -746,7 +748,9 @@ gc::future<std::int64_t> async_download_objects(
     std::vector<object_metadata> const& objects) {
   auto tracer = opentelemetry::trace::Provider::GetTracerProvider()->GetTracer(
       otel_sv(kAppName));
-  auto const parent_scope = tracer->WithActiveSpan(span);
+  // We easily go over the spans-per-trace limit (1,000) if we keep all the
+  // spans connected to the root span.
+  //   auto const parent_scope = tracer->WithActiveSpan(span);
 
   auto task_span = tracer->StartSpan(
       std::format("ssb::maxt::download/{}", task_id),
