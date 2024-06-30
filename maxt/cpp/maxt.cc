@@ -607,7 +607,9 @@ auto download_objects(
       std::format("ssb::maxt::download/{}", task_id),
       opentelemetry::common::MakeAttributes(
           make_common_attributes(cfg, iteration, "DOWNLOAD")));
-  auto const task_scope = tracer->WithActiveSpan(task_span);
+  // We easily go over the spans-per-trace limit (1,000) as an upload contains
+  // multiple "upload a chunk" requests
+  //    auto const task_scope = tracer->WithActiveSpan(task_span);
   auto total_bytes = std::int64_t{0};
   auto i = 0;
   std::vector<char> buffer(16 * kMiB);
@@ -735,7 +737,9 @@ gc::future<std::vector<object_metadata>> async_upload_objects(
   std::vector<object_metadata> objects;
   auto i = 0;
   while (auto object_name = object_names->next()) {
-    auto const scope = tracer->WithActiveSpan(task_span);
+    // We easily go over the spans-per-trace limit (1,000) as an upload contains
+    // multiple "upload a chunk" requests
+    //    auto const scope = tracer->WithActiveSpan(task_span);
     auto upload_span = tracer->StartSpan(
         std::format("ssb::maxt::upload/{}/{}", task_id, i++),
         opentelemetry::common::MakeAttributes(
