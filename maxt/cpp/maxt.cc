@@ -556,16 +556,11 @@ auto upload_objects(
     std::shared_ptr<work_queue<std::string>> object_names, random_data data) {
   auto tracer = opentelemetry::trace::Provider::GetTracerProvider()->GetTracer(
       otel_sv(kAppName));
-  auto const parent_scope = tracer->WithActiveSpan(span);
-
-  auto task_span =
-      tracer->StartSpan(std::format("ssb::maxt::upload/{}", task_id),
-                        opentelemetry::common::MakeAttributes(
-                            make_common_attributes(cfg, iteration, "UPLOAD")));
-  // We easily go over the spans-per-trace limit (1,000) if we keep all the
-  // spans connected to the root span.
-  //     auto const task_scope = tracer->WithActiveSpan(task_span);
-
+  auto task_span = tracer->StartSpan(
+      std::format("ssb::maxt::upload/{}", task_id),
+      opentelemetry::common::MakeAttributes(
+          make_common_attributes(cfg, iteration, "UPLOAD")),
+      opentelemetry::trace::StartSpanOptions{.parent = span->GetContext()});
   std::vector<object_metadata> objects;
   auto i = 0;
   while (auto name = object_names->next()) {
@@ -599,15 +594,11 @@ auto download_objects(
     std::shared_ptr<work_queue<object_metadata>> objects) {
   auto tracer = opentelemetry::trace::Provider::GetTracerProvider()->GetTracer(
       otel_sv(kAppName));
-  auto const parent_scope = tracer->WithActiveSpan(span);
-
   auto task_span = tracer->StartSpan(
       std::format("ssb::maxt::download/{}", task_id),
       opentelemetry::common::MakeAttributes(
-          make_common_attributes(cfg, iteration, "DOWNLOAD")));
-  // We easily go over the spans-per-trace limit (1,000) if we keep all the
-  // spans connected to the root span.
-  //    auto const task_scope = tracer->WithActiveSpan(task_span);
+          make_common_attributes(cfg, iteration, "DOWNLOAD")),
+      opentelemetry::trace::StartSpanOptions{.parent = span->GetContext()});
   auto total_bytes = std::int64_t{0};
   auto i = 0;
   std::vector<char> buffer(16 * kMiB);
@@ -723,19 +714,15 @@ gc::future<std::vector<object_metadata>> async_upload_objects(
     std::shared_ptr<work_queue<std::string>> object_names, random_data data) {
   auto tracer = opentelemetry::trace::Provider::GetTracerProvider()->GetTracer(
       otel_sv(kAppName));
-  auto const parent_scope = tracer->WithActiveSpan(span);
-
-  auto task_span =
-      tracer->StartSpan(std::format("ssb::maxt::upload/{}", task_id),
-                        opentelemetry::common::MakeAttributes(
-                            make_common_attributes(cfg, iteration, "UPLOAD")));
+  auto task_span = tracer->StartSpan(
+      std::format("ssb::maxt::upload/{}", task_id),
+      opentelemetry::common::MakeAttributes(
+          make_common_attributes(cfg, iteration, "UPLOAD")),
+      opentelemetry::trace::StartSpanOptions{.parent = span->GetContext()});
   gc::storage_experimental::BucketName bucket_name(cfg.bucket_name);
   std::vector<object_metadata> objects;
   auto i = 0;
   while (auto object_name = object_names->next()) {
-    // We easily go over the spans-per-trace limit (1,000) as an upload contains
-    // multiple "upload a chunk" requests
-    //    auto const scope = tracer->WithActiveSpan(task_span);
     auto upload_span = tracer->StartSpan(
         std::format("ssb::maxt::upload/{}/{}", task_id, i++),
         opentelemetry::common::MakeAttributes(
@@ -749,12 +736,14 @@ gc::future<std::vector<object_metadata>> async_upload_objects(
     while (offset < iteration.object_size) {
       auto n =
           std::min<std::size_t>(iteration.object_size - offset, data->size());
+      auto const scope = tracer->WithActiveSpan(upload_span);
       token = (co_await writer.Write(std::move(token),
                                      gc::storage_experimental::WritePayload(
                                          std::string(data->data(), n))))
                   .value();
       offset += n;
     }
+    auto const scope = tracer->WithActiveSpan(upload_span);
     auto m = (co_await writer.Finalize(std::move(token))).value();
     t.record_single(cfg, iteration, "UPLOAD");
     objects.push_back({m.bucket(), m.name(), m.generation()});
@@ -769,16 +758,14 @@ gc::future<std::int64_t> async_download_objects(
     std::shared_ptr<work_queue<object_metadata>> objects) {
   auto tracer = opentelemetry::trace::Provider::GetTracerProvider()->GetTracer(
       otel_sv(kAppName));
-  auto const parent_scope = tracer->WithActiveSpan(span);
-
   auto task_span = tracer->StartSpan(
       std::format("ssb::maxt::download/{}", task_id),
       opentelemetry::common::MakeAttributes(
-          make_common_attributes(cfg, iteration, "DOWNLOAD")));
+          make_common_attributes(cfg, iteration, "DOWNLOAD")),
+      opentelemetry::trace::StartSpanOptions{.parent = span->GetContext()});
   auto total_bytes = std::int64_t{0};
   auto i = 0;
   while (auto object = objects->next()) {
-    //    auto const task_scope = tracer->WithActiveSpan(task_span);
     auto download_span = tracer->StartSpan(
         std::format("ssb::maxt::download/{}/{}", task_id, i++),
         opentelemetry::common::MakeAttributes(
@@ -792,6 +779,7 @@ gc::future<std::int64_t> async_download_objects(
     auto [reader, token] =
         (co_await client.ReadObject(std::move(request))).value();
     while (token.valid()) {
+      auto const scope = tracer->WithActiveSpan(download_span);
       auto [payload, t] = (co_await reader.Read(std::move(token))).value();
       for (auto sv : payload.contents()) total_bytes += sv.size();
       token = std::move(t);
