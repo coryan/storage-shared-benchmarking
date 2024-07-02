@@ -900,6 +900,7 @@ auto options(boost::program_options::variables_map const& vm) {
       .set<gc::storage::DownloadStallMinimumRateOption>(20 * kMiB)
       .set<gc::storage::DownloadStallTimeoutOption>(1s)
       .set<gc::storage::UploadBufferSizeOption>(256 * kKiB)
+      .set<gc::storage_experimental::HttpVersionOption>("1.1")
       .set<gc::OpenTelemetryTracingOption>(enable_tracing);
 }
 
