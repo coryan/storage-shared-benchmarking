@@ -91,13 +91,14 @@ RUN curl -fsSL https://github.com/grpc/grpc/archive/v1.64.2.tar.gz | \
     rm -fr .build
 
 WORKDIR /var/tmp/build/google-cloud-cpp
-RUN curl -fsSL https://github.com/coryan/google-cloud-cpp/archive/92788fb617c31f2b24e37d21def379237ddb5279.tar.gz | \
+RUN curl -fsSL https://github.com/coryan/google-cloud-cpp/archive/0a734d2e75fc366ab1165e269d4373dfa1a10b6f.tar.gz | \
     tar -xzf - --strip-components=1 && \
     cmake \
       -G Ninja -S . -B .build \
       -DCMAKE_BUILD_TYPE=Release \
       -DBUILD_SHARED_LIBS=OFF \
       -DBUILD_TESTING=OFF \
+      -DGOOGLE_CLOUD_CPP_WITH_MOCKS=OFF \
       -DGOOGLE_CLOUD_CPP_ENABLE_EXAMPLES=OFF \
       -DGOOGLE_CLOUD_CPP_ENABLE=storage,experimental-storage_grpc,monitoring,opentelemetry && \
     cmake --build .build && cmake --install .build && \
