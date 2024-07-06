@@ -14,7 +14,7 @@
 # limitations under the License.
 # ~~~
 
-cmake_minimum_required(VERSION 3.24...3.28)
+cmake_minimum_required(VERSION 3.28...3.30)
 project(maxt CXX)
 
 find_package(google_cloud_cpp_monitoring CONFIG REQUIRED)
@@ -46,12 +46,14 @@ if (ERROR_CODE)
     set(SSB_VERSION "unknown")
 endif ()
 
-add_executable(maxt maxt.cc)
+add_executable(maxt main.cc)
 target_compile_features(maxt PRIVATE cxx_std_20)
 target_compile_definitions(
     maxt PRIVATE SSB_PROTOBUF_VERSION="${Protobuf_VERSION}"
                  SSB_VERSION="${SSB_VERSION}")
 target_compile_options(maxt PRIVATE -Wall -Werror)
+target_sources(maxt PUBLIC FILE_SET CXX_MODULES FILES # cmake-format: sorted
+                           constants.cc parse_args.cc maxt.cc)
 target_link_libraries(
     maxt
     PRIVATE google-cloud-cpp::experimental-storage_grpc

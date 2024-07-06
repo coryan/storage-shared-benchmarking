@@ -12,9 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+module;
 #include <google/cloud/grpc_options.h>
-#include <google/cloud/internal/build_info.h>
-#include <google/cloud/internal/compiler_info.h>
 #include <google/cloud/opentelemetry/monitoring_exporter.h>
 #include <google/cloud/opentelemetry/resource_detector.h>
 #include <google/cloud/opentelemetry/trace_exporter.h>
@@ -26,13 +25,14 @@
 #include <google/cloud/storage/options.h>
 #include <google/cloud/version.h>
 #include <boost/lexical_cast.hpp>
-#include <boost/program_options.hpp>
+#include <boost/program_options/variables_map.hpp>
 #include <boost/uuid/random_generator.hpp>
 #include <boost/uuid/uuid_io.hpp>
 #include <curl/curlver.h>
 #include <grpcpp/grpcpp.h>
 #include <opentelemetry/context/context.h>
 #include <opentelemetry/metrics/provider.h>
+#include <opentelemetry/nostd/shared_ptr.h>
 #include <opentelemetry/sdk/common/attribute_utils.h>
 #include <opentelemetry/sdk/metrics/export/metric_producer.h>
 #include <opentelemetry/sdk/metrics/export/periodic_exporting_metric_reader_factory.h>
@@ -42,6 +42,7 @@
 #include <opentelemetry/sdk/metrics/view/instrument_selector_factory.h>
 #include <opentelemetry/sdk/metrics/view/meter_selector_factory.h>
 #include <opentelemetry/sdk/metrics/view/view_factory.h>
+#include <opentelemetry/sdk/metrics/view/view_registry.h>
 #include <opentelemetry/sdk/resource/semantic_conventions.h>
 #include <opentelemetry/sdk/trace/batch_span_processor.h>
 #include <opentelemetry/sdk/trace/batch_span_processor_options.h>
@@ -70,15 +71,16 @@
 #include <vector>
 #include <sys/resource.h>
 
+export module maxt;
+import :constants;
+import :parse_args;
+
 namespace {
 
 using namespace std::literals;
+namespace gc = ::google::cloud;
 
-auto constexpr kKiB = 1024;
-auto constexpr kMiB = kKiB * kKiB;
 auto constexpr kRandomDataSize = 32 * kMiB;
-
-auto constexpr kAppName = "maxt"sv;
 
 auto constexpr kLatencyHistogramName = "ssb/maxt/latency";
 auto constexpr kLatencyDescription =
@@ -103,13 +105,11 @@ auto constexpr kMemoryHistogramUnit = "1{memory}";
 auto constexpr kVersion = "1.2.0";
 auto constexpr kSchema = "https://opentelemetry.io/schemas/1.2.0";
 
-auto constexpr kDefaultIterations = 1'000'000;
-auto constexpr kDefaultSampleRate = 0.05;
+}  // namespace
 
-namespace gc = ::google::cloud;
+namespace maxt_internal {
+
 using dseconds = std::chrono::duration<double, std::ratio<1>>;
-
-boost::program_options::variables_map parse_args(int argc, char* argv[]);
 
 using histogram_ptr =
     opentelemetry::nostd::shared_ptr<opentelemetry::metrics::Histogram<double>>;
@@ -212,112 +212,6 @@ auto generate_uuid(std::mt19937_64& gen) {
   using uuid_generator = boost::uuids::basic_random_generator<std::mt19937_64>;
   return boost::uuids::to_string(uuid_generator{gen}());
 }
-
-void run(config cfg, named_experiments experiments);
-
-}  // namespace
-
-int main(int argc, char* argv[]) try {
-  auto const vm = parse_args(argc, argv);
-
-  auto const project = gc::Project(vm["project-id"].as<std::string>());
-  auto generator = make_prng_bits_generator();
-  auto const instance = generate_uuid(generator);
-
-  auto const bucket_name = vm["bucket"].as<std::string>();
-  auto const deployment = vm["deployment"].as<std::string>();
-
-  auto join = [](auto collection) {
-    if (collection.empty()) return std::string{};
-    return std::accumulate(std::next(collection.begin()), collection.end(),
-                           boost::lexical_cast<std::string>(collection.front()),
-                           [](auto a, auto const& b) {
-                             a += ",";
-                             a += boost::lexical_cast<std::string>(b);
-                             return a;
-                           });
-  };
-
-  auto tracer_provider = make_tracer_provider(vm);
-  auto meter_provider =
-      make_meter_provider(google::cloud::Project(project), instance);
-  auto meter =
-      meter_provider->GetMeter(std::string{kAppName}, kVersion, kSchema);
-  histogram_ptr latency = meter->CreateDoubleHistogram(
-      kLatencyHistogramName, kLatencyDescription, kLatencyHistogramUnit);
-  histogram_ptr throughput = meter->CreateDoubleHistogram(
-      kThroughputHistogramName, kThroughputDescription,
-      kThroughputHistogramUnit);
-  histogram_ptr cpu = meter->CreateDoubleHistogram(
-      kCpuHistogramName, kCpuDescription, kCpuHistogramUnit);
-  histogram_ptr memory = meter->CreateDoubleHistogram(
-      kMemoryHistogramName, kMemoryDescription, kMemoryHistogramUnit);
-
-  auto cfg = config{
-      .bucket_name = std::move(bucket_name),
-      .deployment = deployment,
-      .instance = instance,
-      .region = discover_region(),
-      .iterations = vm["iterations"].as<int>(),
-      .object_sizes = vm["object-sizes"].as<std::vector<std::int64_t>>(),
-      .worker_counts = vm["worker-counts"].as<std::vector<int>>(),
-      .object_counts = vm["object-counts"].as<std::vector<int>>(),
-      .repeated_read_counts = vm["repeated-read-counts"].as<std::vector<int>>(),
-      .ssb_version = SSB_VERSION,
-      .sdk_version = gc::version_string(),
-      .grpc_version = grpc::Version(),
-      .protobuf_version = SSB_PROTOBUF_VERSION,
-      .http_client_version = LIBCURL_VERSION,
-      .latency = std::move(latency),
-      .throughput = std::move(throughput),
-      .cpu = std::move(cpu),
-      .memory = std::move(memory),
-  };
-
-  // Using the `internal` namespace is frowned upon. The C++ SDK team may change
-  // the types and functions in this namespace at any time. If this ever breaks
-  // we will find out at compile time, and will need to detect the compiler and
-  // build flags ourselves.
-  namespace gci = ::google::cloud::internal;
-  std::cout << "## Starting continuous GCS C++ SDK benchmark"              //
-            << "\n# bucket: " << cfg.bucket_name                           //
-            << "\n# deployment: " << cfg.deployment                        //
-            << "\n# instance: " << cfg.instance                            //
-            << "\n# region: " << cfg.region                                //
-            << "\n# iterations: " << cfg.iterations                        //
-            << "\n# object-sizes: " << join(cfg.object_sizes)              //
-            << "\n# worker-counts: " << join(cfg.worker_counts)            //
-            << "\n# object-counts: " << join(cfg.object_counts)            //
-            << "\n# repeated-read-counts-counts: "                         //
-            << join(cfg.repeated_read_counts)                              //
-            << "\n# experiments: "                                         //
-            << join(vm["experiments"].as<std::vector<std::string>>())      //
-            << "\n# Version: " << cfg.ssb_version                          //
-            << "\n# C++ SDK version: " << cfg.sdk_version                  //
-            << "\n# gRPC version: " << cfg.grpc_version                    //
-            << "\n# Protobuf version: " << cfg.protobuf_version            //
-            << "\n# C++ SDK Compiler: " << gci::CompilerId()               //
-            << "\n# C++ SDK Compiler Version: " << gci::CompilerVersion()  //
-            << "\n# C++ SDK Compiler Flags: " << gci::compiler_flags()     //
-            << "\n# project-id: " << project                               //
-            << "\n# tracing-rate: " << vm["tracing-rate"].as<double>()     //
-            << std::endl;                                                  //
-
-  std::vector<std::jthread> runners;
-  std::generate_n(
-      std::back_inserter(runners), vm["runners"].as<int>(),
-      [&cfg, &vm] { return std::jthread(run, cfg, make_experiments(vm)); });
-
-  return EXIT_SUCCESS;
-} catch (std::exception const& ex) {
-  std::cerr << "Standard C++ exception caught " << ex.what() << "\n";
-  return EXIT_FAILURE;
-} catch (...) {
-  std::cerr << "Unknown exception caught\n";
-  return EXIT_FAILURE;
-}
-
-namespace {
 
 template <typename Collection>
 auto pick_one(std::mt19937_64& generator, Collection const& collection) {
@@ -952,12 +846,6 @@ auto make_async_dp(boost::program_options::variables_map const& vm) {
       async_options(vm, "dp-", "google-c2p:///storage.googleapis.com"));
 }
 
-auto constexpr kJson = "JSON"sv;
-auto constexpr kGrpcCfe = "GRPC+CFE"sv;
-auto constexpr kGrpcDp = "GRPC+DP"sv;
-auto constexpr kAsyncGrpcCfe = "ASYNC+GRPC+CFE"sv;
-auto constexpr kAsyncGrpcDp = "ASYNC+GRPC+DP"sv;
-
 named_experiments make_experiments(
     boost::program_options::variables_map const& vm) {
   named_experiments ne;
@@ -1139,82 +1027,73 @@ std::unique_ptr<opentelemetry::metrics::MeterProvider> make_meter_provider(
   return provider;
 }
 
-boost::program_options::variables_map parse_args(int argc, char* argv[]) {
-  auto const cores = static_cast<int>(std::thread::hardware_concurrency());
+}  // namespace maxt_internal
 
-  namespace po = boost::program_options;
-  po::options_description desc(
-      "A simple publisher application with Open Telemetery enabled");
-  // The following empty line comments are for readability.
-  desc.add_options()                      //
-      ("help,h", "produce help message")  //
-      // Benchmark options
-      ("bucket", po::value<std::string>()->required(),
-       "the name of a Google Cloud Storage bucket. The benchmark uses this"
-       " bucket to upload and download objects and measures the latency.")  //
-      ("deployment", po::value<std::string>()->default_value("development"),
-       "a short string describing where the benchmark is deployed, e.g."
-       " development, or GKE, or GCE.")  //
-      ("iterations", po::value<int>()->default_value(kDefaultIterations),
-       "the number of iterations before exiting the test")  //
-      // Create enough workers to keep the available CPUs busy rea
-      ("worker-counts",
-       po::value<std::vector<int>>()->multitoken()->default_value(
-           {cores, 2 * cores}, std::format("[ {}, {} ]", cores, 2 * cores)),
-       "the object sizes used in the benchmark.")
-      // Create enough objects, such that every worker has at least one.
-      ("object-counts",
-       po::value<std::vector<int>>()->multitoken()->default_value(
-           {2 * cores}, std::format("[ {} ]", 2 * cores)),
-       "the object counts used in the benchmark.")
-      // Make the objects large enough to mask the TTFB delays.
-      ("object-sizes",
-       po::value<std::vector<std::int64_t>>()->multitoken()->default_value(
-           {256 * kMiB}, "[ 256MiB ]"),
-       "the object sizes used in the benchmark.")
-      // By default read the data only once. That is a fairly cold dataset,
-      // increase this number to simulate hotter datasets.
-      ("repeated-read-counts",
-       po::value<std::vector<int>>()->multitoken()->default_value({1}, "[ 1 ]"),
-       "read each object multiple times to simulate 'hot' data.")  //
-      ("experiments",
-       po::value<std::vector<std::string>>()->multitoken()->default_value(
-           {std::string(kJson), std::string(kGrpcCfe),
-            std::string(kAsyncGrpcCfe)},
-           std::format("[ {}, {}, {} ]", kJson, kGrpcCfe, kAsyncGrpcCfe)),
-       "the experiments used in the benchmark.")
-      //
-      ("runners", po::value<int>()->default_value(1),
-       "the number of runners to run in parallel.")
-      // gRPC configuration options
-      ("cfe-thread-pool", po::value<int>(), "CFE background thread pool.")  //
-      ("cfe-channels", po::value<int>(), "the number of CFE channels.")     //
-      ("dp-thread-pool", po::value<int>(), "DP background thread pool.")    //
-      ("dp-channels", po::value<int>(), "the number of DP channels.")       //
-      // Open Telemetry Processor options
-      ("project-id", po::value<std::string>()->required(),
-       "a Google Cloud Project id. The benchmark sends its results to this"
-       " project as Cloud Monitoring metrics and Cloud Trace traces.")  //
-      ("tracing-rate", po::value<double>()->default_value(kDefaultSampleRate),
-       "otel::BasicTracingRateOption value")  //
-      ("max-queue-size", po::value<std::size_t>()->default_value(1'000'000),
-       "set the max queue size for open telemetery")  //
-      ;
+export namespace maxt {
 
-  po::variables_map vm;
-  po::store(po::command_line_parser(argc, argv).options(desc).run(), vm);
-  if (vm.count("help") || argc == 1) {
-    std::cerr << "Usage: " << argv[0] << "\n";
-    std::cerr << desc << "\n";
-    std::exit(argc == 1 ? EXIT_FAILURE : EXIT_SUCCESS);
-  }
-  po::notify(vm);
-  return vm;
+auto parse_args(int argc, char* argv[]) { return ::parse_args(argc, argv); }
+void count_allocations(std::size_t count) {
+  maxt_internal::allocated_bytes.fetch_add(count);
+}
+auto make_prng_bits_generator() {
+  return maxt_internal::make_prng_bits_generator();
+}
+auto generate_uuid(auto& generator) {
+  return maxt_internal::generate_uuid(generator);
 }
 
-}  // namespace
+auto make_config(boost::program_options::variables_map const& vm) {
+  auto generator = maxt::make_prng_bits_generator();
+  auto const instance = maxt::generate_uuid(generator);
 
-void* operator new(std::size_t count) {
-  allocated_bytes.fetch_add(count);
-  return std::malloc(count);
+  auto const bucket_name = vm["bucket"].as<std::string>();
+  auto const deployment = vm["deployment"].as<std::string>();
+
+  auto tracer_provider = maxt_internal::make_tracer_provider(vm);
+  auto meter_provider = maxt_internal::make_meter_provider(
+      google::cloud::Project(vm["project-id"].as<std::string>()), instance);
+  auto meter =
+      meter_provider->GetMeter(std::string{kAppName}, kVersion, kSchema);
+  maxt_internal::histogram_ptr latency = meter->CreateDoubleHistogram(
+      kLatencyHistogramName, kLatencyDescription, kLatencyHistogramUnit);
+  maxt_internal::histogram_ptr throughput = meter->CreateDoubleHistogram(
+      kThroughputHistogramName, kThroughputDescription,
+      kThroughputHistogramUnit);
+  maxt_internal::histogram_ptr cpu = meter->CreateDoubleHistogram(
+      kCpuHistogramName, kCpuDescription, kCpuHistogramUnit);
+  maxt_internal::histogram_ptr memory = meter->CreateDoubleHistogram(
+      kMemoryHistogramName, kMemoryDescription, kMemoryHistogramUnit);
+
+  return maxt_internal::config{
+      .bucket_name = std::move(bucket_name),
+      .deployment = deployment,
+      .instance = instance,
+      .region = maxt_internal::discover_region(),
+      .iterations = vm["iterations"].as<int>(),
+      .object_sizes = vm["object-sizes"].as<std::vector<std::int64_t>>(),
+      .worker_counts = vm["worker-counts"].as<std::vector<int>>(),
+      .object_counts = vm["object-counts"].as<std::vector<int>>(),
+      .repeated_read_counts = vm["repeated-read-counts"].as<std::vector<int>>(),
+      .ssb_version = SSB_VERSION,
+      .sdk_version = gc::version_string(),
+      .grpc_version = grpc::Version(),
+      .protobuf_version = SSB_PROTOBUF_VERSION,
+      .http_client_version = LIBCURL_VERSION,
+      .latency = std::move(latency),
+      .throughput = std::move(throughput),
+      .cpu = std::move(cpu),
+      .memory = std::move(memory),
+  };
 }
+
+maxt_internal::named_experiments make_experiments(
+    boost::program_options::variables_map const& vm) {
+  return maxt_internal::make_experiments(vm);
+}
+
+void run(maxt_internal::config cfg,
+         maxt_internal::named_experiments experiments) {
+  return maxt_internal::run(std::move(cfg), std::move(experiments));
+}
+
+}  // namespace maxt
