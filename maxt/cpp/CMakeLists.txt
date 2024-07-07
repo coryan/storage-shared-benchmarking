@@ -53,7 +53,7 @@ target_compile_definitions(
                  SSB_VERSION="${SSB_VERSION}")
 target_compile_options(maxt PRIVATE -Wall -Werror)
 target_sources(maxt PUBLIC FILE_SET CXX_MODULES FILES # cmake-format: sorted
-                           constants.cc parse_args.cc maxt.cc)
+                           config.cc constants.cc experiment.cc async_experiment.cc sync_experiment.cc resource_usage.cc parse_args.cc maxt.cc)
 target_link_libraries(
     maxt
     PRIVATE google-cloud-cpp::experimental-storage_grpc
