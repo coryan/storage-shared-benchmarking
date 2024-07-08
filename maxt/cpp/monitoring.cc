@@ -34,8 +34,8 @@ module;
 #include <opentelemetry/sdk/trace/batch_span_processor_options.h>
 #include <opentelemetry/sdk/trace/samplers/trace_id_ratio_factory.h>
 #include <opentelemetry/sdk/trace/tracer_provider.h>
-#include <opentelemetry/trace/tracer_provider.h>
 #include <opentelemetry/trace/provider.h>
+#include <opentelemetry/trace/tracer_provider.h>
 #include <cstdint>
 #include <string>
 #include <string_view>
@@ -64,9 +64,13 @@ struct measurement_value {
 using histogram_ptr =
     opentelemetry::nostd::shared_ptr<opentelemetry::metrics::Histogram<double>>;
 
+using gauge_ptr = opentelemetry::nostd::shared_ptr<
+    opentelemetry::metrics::ObservableInstrument>;
+
 }  // namespace maxt_internal
 
 namespace std {
+
 template <>
 struct std::hash<maxt_internal::measurement_key> {
   std::size_t operator()(
@@ -93,26 +97,56 @@ auto constexpr kLatencyDescription =
     "Operation latency as measured by the benchmark.";
 auto constexpr kLatencyHistogramUnit = "s";
 
-auto constexpr kThroughputHistogramName = "ssb/maxt/throughput";
+auto constexpr kThroughputName = "ssb/maxt/iteration/throughput";
 auto constexpr kThroughputDescription =
     "Aggregate throughput latency as measured by the benchmark.";
-auto constexpr kThroughputHistogramUnit = "b/s";
+auto constexpr kThroughputUnit = "b/s";
 
-auto constexpr kCpuHistogramName = "ssb/maxt/cpu";
+auto constexpr kCpuName = "ssb/maxt/iteration/cpu";
 auto constexpr kCpuDescription =
-    "CPU usage per byte as measured by the benchmark.";
-auto constexpr kCpuHistogramUnit = "ns/B{CPU}";
+    "Aggregate CPU usage per byte as measured by the benchmark.";
+auto constexpr kCpuUnit = "ns/B{CPU}";
 
-auto constexpr kMemoryHistogramName = "ssb/maxt/memory";
+auto constexpr kMemoryName = "ssb/maxt/iteration/memory";
 auto constexpr kMemoryDescription =
     "Memory usage per byte as measured by the benchmark.";
-auto constexpr kMemoryHistogramUnit = "1{memory}";
+auto constexpr kMemoryUnit = "1{memory}";
 
 auto constexpr kVersion = "1.2.0";
 auto constexpr kSchema = "https://opentelemetry.io/schemas/1.2.0";
 
+auto otel_sv(std::string_view s) {
+  return opentelemetry::nostd::string_view(s.data(), s.size());
+}
+
+auto make_common_attributes(config const& cfg,
+                            iteration_config const& iteration,
+                            std::string_view op) {
+  return std::vector<std::pair<opentelemetry::nostd::string_view,
+                               opentelemetry::common::AttributeValue>>{
+      {"ssb.app", otel_sv(kAppName)},
+      {"ssb.op", otel_sv(op)},
+      {"ssb.language", "cpp"},
+      {"ssb.experiment", iteration.experiment},
+      {"ssb.object-size", iteration.object_size},
+      {"ssb.object-count", iteration.object_count},
+      {"ssb.worker-count", iteration.worker_count},
+      {"ssb.repeated-read-count", iteration.repeated_read_count},
+      {"ssb.deployment", cfg.deployment},
+      {"ssb.instance", cfg.instance},
+      {"ssb.region", cfg.region},
+      {"ssb.version", cfg.ssb_version},
+      {"ssb.version.sdk", cfg.sdk_version},
+      {"ssb.version.grpc", cfg.grpc_version},
+      {"ssb.version.protobuf", cfg.protobuf_version},
+      {"ssb.version.http-client", cfg.http_client_version},
+  };
+}
+
 class measurements {
  public:
+  explicit measurements(config const& cfg) : cfg_(cfg) {}
+
   void store(iteration_config const& iteration, std::string_view op,
              measurement_value value) {
     std::lock_guard lk(mu_);
@@ -121,10 +155,50 @@ class measurements {
         std::move(value));
   }
 
-  void fetch() const;
+  using observer_t = opentelemetry::nostd::shared_ptr<
+      opentelemetry::metrics::ObserverResultT<double>>;
+
+  static void fetch_throughput(opentelemetry::metrics::ObserverResult o,
+                               void* state) {
+    using opentelemetry::nostd::get;
+    using opentelemetry::nostd::holds_alternative;
+    if (not holds_alternative<observer_t>(o)) return;
+    static_cast<measurements*>(state)->fetch(
+        get<observer_t>(o),
+        [](measurement_value const& v) { return v.throughput; });
+  }
+
+  static void fetch_cpu(opentelemetry::metrics::ObserverResult o, void* state) {
+    using opentelemetry::nostd::get;
+    using opentelemetry::nostd::holds_alternative;
+    if (not holds_alternative<observer_t>(o)) return;
+    static_cast<measurements*>(state)->fetch(
+        get<observer_t>(o), [](measurement_value const& v) { return v.cpu; });
+  }
+
+  static void fetch_memory(opentelemetry::metrics::ObserverResult o,
+                           void* state) {
+    using opentelemetry::nostd::get;
+    using opentelemetry::nostd::holds_alternative;
+    if (not holds_alternative<observer_t>(o)) return;
+    static_cast<measurements*>(state)->fetch(
+        get<observer_t>(o),
+        [](measurement_value const& v) { return v.memory; });
+  }
+
+ private:
+  void fetch(observer_t observer, auto const& get_value) {
+    std::lock_guard lk(mu_);
+    for (auto const& [k, v] : values_) {
+      observer->Observe(get_value(v), opentelemetry::common::MakeAttributes(
+                                          make_common_attributes(
+                                              cfg_, k.iteration, k.operation)));
+    }
+  }
 
  private:
   mutable std::mutex mu_;
+  config cfg_;
   std::unordered_map<measurement_key, measurement_value> values_;
 };
 
@@ -160,53 +234,6 @@ auto make_latency_histogram_boundaries() {
         std::chrono::duration_cast<dseconds>(boundary).count());
     if (i != 0 && i % 10 == 0) increment *= 2;
     boundary += increment;
-  }
-  return boundaries;
-}
-
-auto make_throughput_histogram_boundaries() {
-  // Cloud Monitoring only supports up to 200 buckets per histogram, we have
-  // to choose them carefully.
-  std::vector<double> boundaries;
-  // The units are bits/s, use 2 Gpbs intervals, as some VMs support 100 Gbps,
-  // and that number can only go up.
-  auto boundary = 0.0;
-  auto increment = 2'000'000'000.0;
-  for (int i = 0; i != 200; ++i) {
-    boundaries.push_back(boundary);
-    boundary += increment;
-  }
-  return boundaries;
-}
-
-auto make_cpu_histogram_boundaries() {
-  // Cloud Monitoring only supports up to 200 buckets per histogram, we have
-  // to choose them carefully.
-  std::vector<double> boundaries;
-  // The units are ns/B, we start with increments of 0.1ns.
-  auto boundary = 0.0;
-  auto increment = 1.0 / 8.0;
-  for (int i = 0; i != 200; ++i) {
-    boundaries.push_back(boundary);
-    if (i != 0 && i % 32 == 0) increment *= 2;
-    boundary += increment;
-  }
-  return boundaries;
-}
-
-auto make_memory_histogram_boundaries() {
-  // Cloud Monitoring only supports up to 200 buckets per histogram, we have
-  // to choose them carefully.
-  std::vector<double> boundaries;
-  // We expect the library to use less memory than the transferred size, that
-  // is why we stream the data. Use exponentially growing bucket sizes, since
-  // we have no better ideas.
-  auto boundary = 0.0;
-  auto increment = 1.0 / 16.0;
-  for (int i = 0; i != 200; ++i) {
-    boundaries.push_back(boundary);
-    boundary += increment;
-    if (i != 0 && i % 16 == 0) increment *= 2;
   }
   return boundaries;
 }
@@ -267,13 +294,6 @@ std::unique_ptr<opentelemetry::metrics::MeterProvider> make_meter_provider(
   add_histogram_view(p, kLatencyHistogramName, kLatencyDescription,
                      kLatencyHistogramUnit,
                      make_latency_histogram_boundaries());
-  add_histogram_view(p, kThroughputHistogramName, kThroughputDescription,
-                     kThroughputHistogramUnit,
-                     make_throughput_histogram_boundaries());
-  add_histogram_view(p, kCpuHistogramName, kCpuDescription, kCpuHistogramUnit,
-                     make_cpu_histogram_boundaries());
-  add_histogram_view(p, kMemoryHistogramName, kMemoryDescription,
-                     kMemoryHistogramUnit, make_memory_histogram_boundaries());
 
   return provider;
 }
@@ -303,9 +323,9 @@ std::shared_ptr<opentelemetry::trace::TracerProvider> make_tracer_provider(
 struct metrics {
   std::shared_ptr<measurements> measurements;
   histogram_ptr latency;
-  histogram_ptr throughput;
-  histogram_ptr cpu;
-  histogram_ptr memory;
+  gauge_ptr throughput;
+  gauge_ptr cpu;
+  gauge_ptr memory;
 };
 
 auto make_metrics(boost::program_options::variables_map const& vm,
@@ -316,26 +336,28 @@ auto make_metrics(boost::program_options::variables_map const& vm,
   auto meter =
       meter_provider->GetMeter(std::string{kAppName}, kVersion, kSchema);
 
+  auto m = std::make_shared<measurements>(cfg);
   auto latency = meter->CreateDoubleHistogram(
       kLatencyHistogramName, kLatencyDescription, kLatencyHistogramUnit);
-  auto throughput = meter->CreateDoubleHistogram(kThroughputHistogramName,
-                                                 kThroughputDescription,
-                                                 kThroughputHistogramUnit);
-  auto cpu = meter->CreateDoubleHistogram(kCpuHistogramName, kCpuDescription,
-                                          kCpuHistogramUnit);
-  auto memory = meter->CreateDoubleHistogram(
-      kMemoryHistogramName, kMemoryDescription, kMemoryHistogramUnit);
+
+  auto throughput = meter->CreateDoubleObservableGauge(
+      kThroughputName, kThroughputDescription, kThroughputUnit);
+  throughput->AddCallback(measurements::fetch_throughput, m.get());
+  auto cpu =
+      meter->CreateDoubleObservableGauge(kCpuName, kCpuDescription, kCpuUnit);
+  cpu->AddCallback(measurements::fetch_cpu, m.get());
+  auto memory = meter->CreateDoubleObservableGauge(
+      kMemoryName, kMemoryDescription, kMemoryUnit);
+  memory->AddCallback(measurements::fetch_memory, m.get());
 
   auto shared = [](auto u) { return histogram_ptr(std::move(u)); };
 
-  auto m = std::make_shared<measurements>();
-  // TODO(coryan) - use `m` to setup callbacks for GAUGE metrics
   return metrics{
-      .measurements = std::move(m),                 //
-      .latency = shared(std::move(latency)),        //
-      .throughput = shared(std::move(throughput)),  //
-      .cpu = shared(std::move(cpu)),                //
-      .memory = shared(std::move(memory)),          //
+      .measurements = std::move(m),           //
+      .latency = shared(std::move(latency)),  //
+      .throughput = std::move(throughput),    //
+      .cpu = std::move(cpu),                  //
+      .memory = std::move(memory),            //
   };
 }
 

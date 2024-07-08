@@ -13,10 +13,8 @@
 // limitations under the License.
 
 module;
-#include <opentelemetry/common/attribute_value.h>
 #include <opentelemetry/common/key_value_iterable_view.h>
 #include <opentelemetry/context/context.h>
-#include <opentelemetry/nostd/string_view.h>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
@@ -36,33 +34,6 @@ namespace maxt_internal {
 // global is used to track the value.
 std::atomic<std::uint64_t> allocated_bytes{0};
 
-auto otel_sv(std::string_view s) {
-  return opentelemetry::nostd::string_view(s.data(), s.size());
-}
-
-auto make_common_attributes(config const& cfg,
-                            iteration_config const& iteration,
-                            std::string_view op) {
-  return std::vector<std::pair<opentelemetry::nostd::string_view,
-                               opentelemetry::common::AttributeValue>>{
-      {"ssb.app", otel_sv(kAppName)},
-      {"ssb.op", otel_sv(op)},
-      {"ssb.language", "cpp"},
-      {"ssb.experiment", iteration.experiment},
-      {"ssb.object-size", iteration.object_size},
-      {"ssb.object-count", iteration.object_count},
-      {"ssb.worker-count", iteration.worker_count},
-      {"ssb.repeated-read-count", iteration.repeated_read_count},
-      {"ssb.deployment", cfg.deployment},
-      {"ssb.instance", cfg.instance},
-      {"ssb.region", cfg.region},
-      {"ssb.version", cfg.ssb_version},
-      {"ssb.version.sdk", cfg.sdk_version},
-      {"ssb.version.grpc", cfg.grpc_version},
-      {"ssb.version.protobuf", cfg.protobuf_version},
-      {"ssb.version.http-client", cfg.http_client_version},
-  };
-}
 
 auto bps(std::int64_t bytes, dseconds elapsed) {
   if (std::abs(elapsed.count()) < std::numeric_limits<double>::epsilon()) {
@@ -95,17 +66,11 @@ class usage {
       return static_cast<double>(value) / static_cast<double>(bytes);
     };
 
-    auto const attributes = make_common_attributes(cfg, iteration, op);
-
-    mts.throughput->Record(bps(bytes, elapsed),
-                           opentelemetry::common::MakeAttributes(attributes),
-                           opentelemetry::context::Context{});
-    mts.cpu->Record(per_byte(cpu_usage.count()),
-                    opentelemetry::common::MakeAttributes(attributes),
-                    opentelemetry::context::Context{});
-    mts.memory->Record(per_byte(mem_usage),
-                       opentelemetry::common::MakeAttributes(attributes),
-                       opentelemetry::context::Context{});
+    mts.measurements->store(
+        iteration, op,
+        measurement_value{.throughput = bps(bytes, elapsed),
+                           .cpu = per_byte(cpu_usage.count()),
+                           .memory = per_byte(mem_usage)});
   }
 
   void record_single(metrics const& mts, config const& cfg,
