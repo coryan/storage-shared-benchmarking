@@ -28,14 +28,13 @@ module;
 export module maxt:resource_usage;
 import :constants;
 import :config;
+import :monitoring;
 
 namespace maxt_internal {
 
 // We instrument `operator new` to track the number of allocated bytes. This
 // global is used to track the value.
 std::atomic<std::uint64_t> allocated_bytes{0};
-
-using dseconds = std::chrono::duration<double, std::ratio<1>>;
 
 auto otel_sv(std::string_view s) {
   return opentelemetry::nostd::string_view(s.data(), s.size());
@@ -84,8 +83,9 @@ class usage {
         std::chrono::steady_clock::now() - clock_);
   }
 
-  void record(config const& cfg, iteration_config const& iteration,
-              std::int64_t bytes, std::string_view op) const {
+  void record(metrics const& mts, config const& cfg,
+              iteration_config const& iteration, std::int64_t bytes,
+              std::string_view op) const {
     auto const cpu_usage = cpu_now() - cpu_;
     auto const elapsed = elapsed_seconds();
     auto const mem_usage = mem_now() - mem_;
@@ -97,21 +97,22 @@ class usage {
 
     auto const attributes = make_common_attributes(cfg, iteration, op);
 
-    cfg.throughput->Record(bps(bytes, elapsed),
+    mts.throughput->Record(bps(bytes, elapsed),
                            opentelemetry::common::MakeAttributes(attributes),
                            opentelemetry::context::Context{});
-    cfg.cpu->Record(per_byte(cpu_usage.count()),
+    mts.cpu->Record(per_byte(cpu_usage.count()),
                     opentelemetry::common::MakeAttributes(attributes),
                     opentelemetry::context::Context{});
-    cfg.memory->Record(per_byte(mem_usage),
+    mts.memory->Record(per_byte(mem_usage),
                        opentelemetry::common::MakeAttributes(attributes),
                        opentelemetry::context::Context{});
   }
 
-  void record_single(config const& cfg, iteration_config const& iteration,
+  void record_single(metrics const& mts, config const& cfg,
+                     iteration_config const& iteration,
                      std::string_view op) const {
     auto const elapsed = elapsed_seconds();
-    cfg.latency->Record(elapsed.count(),
+    mts.latency->Record(elapsed.count(),
                         opentelemetry::common::MakeAttributes(
                             make_common_attributes(cfg, iteration, op)),
                         opentelemetry::context::Context{});

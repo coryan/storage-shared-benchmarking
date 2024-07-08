@@ -27,6 +27,7 @@ module;
 
 export module maxt:experiment;
 import :config;
+import :monitoring;
 
 namespace maxt_internal {
 
@@ -35,10 +36,11 @@ using random_data = std::shared_ptr<std::vector<char> const>;
 struct experiment {
   virtual ~experiment() = default;
   virtual std::vector<object_metadata> upload(std::mt19937_64& generator,
+                                              metrics const& mts,
                                               config const& cfg,
                                               iteration_config const& iteration,
                                               random_data data) = 0;
-  virtual std::int64_t download(config const& cfg,
+  virtual std::int64_t download(metrics const& mts, config const& cfg,
                                 iteration_config const& iteration,
                                 std::vector<object_metadata> objects) = 0;
   virtual void cleanup(config const& cfg, iteration_config const& iteration,

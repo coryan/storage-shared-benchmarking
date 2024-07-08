@@ -75,10 +75,11 @@ int main(int argc, char* argv[]) try {
             << "\n# tracing-rate: " << vm["tracing-rate"].as<double>()     //
             << std::endl;                                                  //
 
+  auto const mts = maxt::make_metrics(vm, cfg);
   std::vector<std::jthread> runners;
   std::generate_n(
-      std::back_inserter(runners), vm["runners"].as<int>(), [&cfg, &vm] {
-        return std::jthread(maxt::run, cfg, maxt::make_experiments(vm));
+      std::back_inserter(runners), vm["runners"].as<int>(), [&mts, &cfg, &vm] {
+        return std::jthread(maxt::run, cfg, mts, maxt::make_experiments(vm));
       });
 
   return EXIT_SUCCESS;

@@ -30,7 +30,7 @@ namespace gc = ::google::cloud;
 namespace maxt_internal {
 
 gc::future<std::vector<object_metadata>> async_upload_objects(
-    config const& cfg, iteration_config const& iteration,
+    metrics const& mts, config const& cfg, iteration_config const& iteration,
     opentelemetry::nostd::shared_ptr<opentelemetry::trace::Span> span,
     gc::storage_experimental::AsyncClient client, int task_id,
     std::shared_ptr<work_queue<std::string>> object_names, random_data data) {
@@ -67,14 +67,14 @@ gc::future<std::vector<object_metadata>> async_upload_objects(
     }
     auto const scope = tracer->WithActiveSpan(upload_span);
     auto m = (co_await writer.Finalize(std::move(token))).value();
-    t.record_single(cfg, iteration, "UPLOAD");
+    t.record_single(mts, cfg, iteration, "UPLOAD");
     objects.push_back({m.bucket(), m.name(), m.generation()});
   }
   co_return objects;
 }
 
 gc::future<std::int64_t> async_download_objects(
-    config const& cfg, iteration_config const& iteration,
+    metrics const& mts, config const& cfg, iteration_config const& iteration,
     opentelemetry::nostd::shared_ptr<opentelemetry::trace::Span> span,
     gc::storage_experimental::AsyncClient client, int task_id,
     std::shared_ptr<work_queue<object_metadata>> objects) {
@@ -106,7 +106,7 @@ gc::future<std::int64_t> async_download_objects(
       for (auto sv : payload.contents()) total_bytes += sv.size();
       token = std::move(t);
     }
-    t.record_single(cfg, iteration, "DOWNLOAD");
+    t.record_single(mts, cfg, iteration, "DOWNLOAD");
   }
   co_return total_bytes;
 }
@@ -134,7 +134,7 @@ class async_experiment : public experiment {
       : client_(std::move(c)) {}
 
   std::vector<object_metadata> upload(std::mt19937_64& generator,
-                                      config const& cfg,
+                                      metrics const& mts, config const& cfg,
                                       iteration_config const& iteration,
                                       random_data data) override {
     auto tracer =
@@ -151,8 +151,8 @@ class async_experiment : public experiment {
       // Set the span before starting a coroutine. Otherwise we nest the span
       // with the suspend/resume callbacks for the coroutine.
       auto const scope = tracer->WithActiveSpan(span);
-      return async_upload_objects(cfg, iteration, span, client_, i++, queue,
-                                  data);
+      return async_upload_objects(mts, cfg, iteration, span, client_, i++,
+                                  queue, data);
     });
     std::vector<object_metadata> result;
     for (auto& t : tasks) try {
@@ -164,7 +164,8 @@ class async_experiment : public experiment {
     return result;
   }
 
-  std::int64_t download(config const& cfg, iteration_config const& iteration,
+  std::int64_t download(metrics const& mts, config const& cfg,
+                        iteration_config const& iteration,
                         std::vector<object_metadata> objects) override {
     auto tracer =
         opentelemetry::trace::Provider::GetTracerProvider()->GetTracer(
@@ -178,7 +179,8 @@ class async_experiment : public experiment {
       // Set the span before starting a coroutine. Otherwise we nest the span
       // with the suspend/resume callbacks for the coroutine.
       auto const scope = tracer->WithActiveSpan(span);
-      return async_download_objects(cfg, iteration, span, client_, i++, queue);
+      return async_download_objects(mts, cfg, iteration, span, client_, i++,
+                                    queue);
     });
     auto result = std::int64_t{0};
     for (auto& t : tasks) try {

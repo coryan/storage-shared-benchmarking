@@ -32,7 +32,7 @@ namespace gc = ::google::cloud;
 namespace maxt_internal {
 
 auto upload_objects(
-    config const& cfg, iteration_config const& iteration,
+    metrics const& mts, config const& cfg, iteration_config const& iteration,
     opentelemetry::nostd::shared_ptr<opentelemetry::trace::Span> span,
     gc::storage::Client client, int task_id,
     std::shared_ptr<work_queue<std::string>> object_names, random_data data) {
@@ -61,7 +61,7 @@ auto upload_objects(
       offset += n;
     }
     os.Close();
-    t.record_single(cfg, iteration, "UPLOAD");
+    t.record_single(mts, cfg, iteration, "UPLOAD");
     auto meta = os.metadata();
     if (os.bad() || !meta) continue;
     objects.push_back({meta->bucket(), meta->name(), meta->generation()});
@@ -70,7 +70,7 @@ auto upload_objects(
 }
 
 auto download_objects(
-    config const& cfg, iteration_config const& iteration,
+    metrics const& mts, config const& cfg, iteration_config const& iteration,
     opentelemetry::nostd::shared_ptr<opentelemetry::trace::Span> span,
     gc::storage::Client client, int task_id,
     std::shared_ptr<work_queue<object_metadata>> objects) {
@@ -97,7 +97,7 @@ auto download_objects(
       is.read(buffer.data(), buffer.size());
       total_bytes += is.gcount();
     }
-    t.record_single(cfg, iteration, "DOWNLOAD");
+    t.record_single(mts, cfg, iteration, "DOWNLOAD");
   }
   return total_bytes;
 }
@@ -120,7 +120,7 @@ class sync_experiment : public experiment {
   explicit sync_experiment(gc::storage::Client c) : client_(std::move(c)) {}
 
   std::vector<object_metadata> upload(std::mt19937_64& generator,
-                                      config const& cfg,
+                                      metrics const& mts, config const& cfg,
                                       iteration_config const& iteration,
                                       random_data data) override {
     auto tracer =
@@ -133,8 +133,9 @@ class sync_experiment : public experiment {
     std::vector<std::future<std::vector<object_metadata>>> tasks(
         iteration.worker_count);
     std::generate(tasks.begin(), tasks.end(), [&, i = 0]() mutable {
-      return std::async(std::launch::async, upload_objects, std::cref(cfg),
-                        std::cref(iteration), span, client_, i++, queue, data);
+      return std::async(std::launch::async, upload_objects, std::cref(mts),
+                        std::cref(cfg), std::cref(iteration), span, client_,
+                        i++, queue, data);
     });
     std::vector<object_metadata> result;
     for (auto& t : tasks) try {
@@ -146,7 +147,8 @@ class sync_experiment : public experiment {
     return result;
   }
 
-  std::int64_t download(config const& cfg, iteration_config const& iteration,
+  std::int64_t download(metrics const& mts, config const& cfg,
+                        iteration_config const& iteration,
                         std::vector<object_metadata> objects) override {
     auto tracer =
         opentelemetry::trace::Provider::GetTracerProvider()->GetTracer(
@@ -156,8 +158,9 @@ class sync_experiment : public experiment {
 
     std::vector<std::future<std::int64_t>> tasks(iteration.worker_count);
     std::generate(tasks.begin(), tasks.end(), [&, i = 0]() mutable {
-      return std::async(std::launch::async, download_objects, std::cref(cfg),
-                        std::cref(iteration), span, client_, i++, queue);
+      return std::async(std::launch::async, download_objects, std::cref(mts),
+                        std::cref(cfg), std::cref(iteration), span, client_,
+                        i++, queue);
     });
     auto result = std::int64_t{0};
     for (auto& t : tasks) try {

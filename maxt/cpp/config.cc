@@ -13,8 +13,6 @@
 // limitations under the License.
 
 module;
-#include <opentelemetry/metrics/sync_instruments.h>
-#include <opentelemetry/nostd/shared_ptr.h>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -22,9 +20,6 @@ module;
 export module maxt:config;
 
 namespace maxt_internal {
-
-using histogram_ptr =
-    opentelemetry::nostd::shared_ptr<opentelemetry::metrics::Histogram<double>>;
 
 struct config {
   std::string bucket_name;
@@ -41,10 +36,6 @@ struct config {
   std::string grpc_version;
   std::string protobuf_version;
   std::string http_client_version;
-  histogram_ptr latency;
-  histogram_ptr throughput;
-  histogram_ptr cpu;
-  histogram_ptr memory;
 };
 
 struct iteration_config {
