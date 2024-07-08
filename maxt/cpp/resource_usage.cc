@@ -85,7 +85,7 @@ class usage {
   }
 
   void record(config const& cfg, iteration_config const& iteration,
-              std::int64_t bytes, auto span, auto attributes) const {
+              std::int64_t bytes, std::string_view op) const {
     auto const cpu_usage = cpu_now() - cpu_;
     auto const elapsed = elapsed_seconds();
     auto const mem_usage = mem_now() - mem_;
@@ -95,15 +95,17 @@ class usage {
       return static_cast<double>(value) / static_cast<double>(bytes);
     };
 
-    cfg.throughput->Record(
-        bps(bytes, elapsed), attributes,
-        opentelemetry::context::Context{}.SetValue("span", span));
-    cfg.cpu->Record(per_byte(cpu_usage.count()), attributes,
-                    opentelemetry::context::Context{}.SetValue("span", span));
-    cfg.memory->Record(
-        per_byte(mem_usage), attributes,
-        opentelemetry::context::Context{}.SetValue("span", span));
-    span->End();
+    auto const attributes = make_common_attributes(cfg, iteration, op);
+
+    cfg.throughput->Record(bps(bytes, elapsed),
+                           opentelemetry::common::MakeAttributes(attributes),
+                           opentelemetry::context::Context{});
+    cfg.cpu->Record(per_byte(cpu_usage.count()),
+                    opentelemetry::common::MakeAttributes(attributes),
+                    opentelemetry::context::Context{});
+    cfg.memory->Record(per_byte(mem_usage),
+                       opentelemetry::common::MakeAttributes(attributes),
+                       opentelemetry::context::Context{});
   }
 
   void record_single(config const& cfg, iteration_config const& iteration,

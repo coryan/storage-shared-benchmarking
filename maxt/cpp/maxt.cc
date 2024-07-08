@@ -53,8 +53,6 @@ module;
 #include <exception>
 #include <functional>
 #include <iostream>
-#include <map>
-#include <new>
 #include <numeric>
 #include <random>
 #include <span>
@@ -187,12 +185,6 @@ void run(config cfg, named_experiments experiments) {
         .repeated_read_count = pick_one(generator, cfg.repeated_read_counts),
     };
 
-    auto as_attributes = [](auto const& attr) {
-      using value_type = typename std::decay_t<decltype(attr)>::value_type;
-      using span_t = opentelemetry::nostd::span<value_type const>;
-      return opentelemetry::common::MakeAttributes(
-          span_t(attr.data(), attr.size()));
-    };
     // Run the upload step in its own scope
     auto const objects = [&] {
       auto attributes = make_common_attributes(cfg, iteration, "UPLOAD");
@@ -203,7 +195,8 @@ void run(config cfg, named_experiments experiments) {
       auto const t = usage();
       auto objects = runner->upload(generator, cfg, iteration, data);
       auto const bytes = objects.size() * iteration.object_size;
-      t.record(cfg, iteration, bytes, span, as_attributes(attributes));
+      t.record(cfg, iteration, bytes, "UPLOAD");
+      span->End();
       std::cout << "UPLOAD " << experiment
                 << " Gbps: " << bps(bytes, t.elapsed_seconds()) / 1'000'000'000
                 << std::endl;
@@ -224,7 +217,8 @@ void run(config cfg, named_experiments experiments) {
       auto active = tracer->WithActiveSpan(download_span);
       auto const t = usage();
       auto const bytes = runner->download(cfg, iteration, repeated);
-      t.record(cfg, iteration, bytes, download_span, as_attributes(attributes));
+      t.record(cfg, iteration, bytes, "DOWNLOAD");
+      download_span->End();
       std::cout << "DOWNLOAD " << experiment
                 << " Gbps: " << bps(bytes, t.elapsed_seconds()) / 1'000'000'000
                 << std::endl;

@@ -18,6 +18,7 @@
 #include <boost/lexical_cast.hpp>
 #include <iostream>
 #include <iterator>
+#include <new>
 #include <numeric>
 #include <string>
 #include <thread>

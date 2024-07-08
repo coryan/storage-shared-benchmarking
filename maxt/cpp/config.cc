@@ -53,6 +53,8 @@ struct iteration_config {
   int object_count;
   int worker_count;
   int repeated_read_count;
+
+  auto operator<=>(iteration_config const&) const = default;
 };
 
 struct object_metadata {
