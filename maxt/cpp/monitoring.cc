@@ -18,8 +18,8 @@ module;
 #include <google/cloud/opentelemetry/trace_exporter.h>
 #include <boost/container_hash/hash.hpp>
 #include <boost/program_options/variables_map.hpp>
-#include <opentelemetry/metrics/meter_provider.h>
 #include <opentelemetry/metrics/async_instruments.h>
+#include <opentelemetry/metrics/meter_provider.h>
 #include <opentelemetry/metrics/sync_instruments.h>
 #include <opentelemetry/nostd/shared_ptr.h>
 #include <opentelemetry/sdk/metrics/aggregation/aggregation_config.h>
@@ -151,9 +151,8 @@ class measurements {
   void store(iteration_config const& iteration, std::string_view op,
              measurement_value value) {
     std::lock_guard lk(mu_);
-    values_.emplace(
-        measurement_key{.operation = std::string(op), .iteration = iteration},
-        std::move(value));
+    values_[measurement_key{.operation = std::string(op),
+                            .iteration = iteration}] = std::move(value);
   }
 
   using observer_t = opentelemetry::nostd::shared_ptr<
