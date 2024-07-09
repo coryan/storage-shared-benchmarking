@@ -19,6 +19,7 @@ module;
 #include <boost/container_hash/hash.hpp>
 #include <boost/program_options/variables_map.hpp>
 #include <opentelemetry/metrics/meter_provider.h>
+#include <opentelemetry/metrics/async_instruments.h>
 #include <opentelemetry/metrics/sync_instruments.h>
 #include <opentelemetry/nostd/shared_ptr.h>
 #include <opentelemetry/sdk/metrics/aggregation/aggregation_config.h>
@@ -322,6 +323,8 @@ std::shared_ptr<opentelemetry::trace::TracerProvider> make_tracer_provider(
 
 struct metrics {
   std::shared_ptr<measurements> measurements;
+  std::shared_ptr<opentelemetry::metrics::MeterProvider> meter_provider;
+  std::shared_ptr<opentelemetry::trace::TracerProvider> tracer_provider;
   histogram_ptr latency;
   gauge_ptr throughput;
   gauge_ptr cpu;
@@ -353,11 +356,13 @@ auto make_metrics(boost::program_options::variables_map const& vm,
   auto shared = [](auto u) { return histogram_ptr(std::move(u)); };
 
   return metrics{
-      .measurements = std::move(m),           //
-      .latency = shared(std::move(latency)),  //
-      .throughput = std::move(throughput),    //
-      .cpu = std::move(cpu),                  //
-      .memory = std::move(memory),            //
+      .measurements = std::move(m),                   //
+      .meter_provider = std::move(meter_provider),    //
+      .tracer_provider = std::move(tracer_provider),  //
+      .latency = shared(std::move(latency)),          //
+      .throughput = std::move(throughput),            //
+      .cpu = std::move(cpu),                          //
+      .memory = std::move(memory),                    //
   };
 }
 
