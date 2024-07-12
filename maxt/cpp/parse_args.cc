@@ -80,7 +80,7 @@ export boost::program_options::variables_map parse_args(int argc,
       //
       ("http-version", po::value<std::string>()->default_value("1.1"),
        "HTTP version (1.0, 1.1, or 2) used for JSON benchmarks")  //
-      ("max-concurrent-stream", po::value<int>()->default_value(4),
+      ("max-concurrent-streams", po::value<int>()->default_value(4),
        "Maximum number of concurrent streams, only benefits gRPC at the "
        "moment")
       // gRPC configuration options
