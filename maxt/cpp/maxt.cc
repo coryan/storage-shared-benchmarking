@@ -171,12 +171,15 @@ auto options(boost::program_options::variables_map const& vm) {
   using namespace std::chrono_literals;
   auto enable_tracing = vm["tracing-rate"].as<double>() != 0.0;
   return gc::Options{}
-      .set<gc::storage::TransferStallMinimumRateOption>(10 * kMiB)
-      .set<gc::storage::TransferStallTimeoutOption>(10s)
-      .set<gc::storage::DownloadStallMinimumRateOption>(20 * kMiB)
+      .set<gc::storage::TransferStallMinimumRateOption>(
+          vm["upload-stall-rate-MiB"].as<int>() * kMiB)
+      .set<gc::storage::TransferStallTimeoutOption>(1s)
+      .set<gc::storage::DownloadStallMinimumRateOption>(
+          vm["download-stall-rate-MiB"].as<int>() * kMiB)
       .set<gc::storage::DownloadStallTimeoutOption>(1s)
       .set<gc::storage::UploadBufferSizeOption>(256 * kKiB)
-      .set<gc::storage_experimental::HttpVersionOption>("1.1")
+      .set<gc::storage_experimental::HttpVersionOption>(
+          vm["http-version"].as<std::string>())
       .set<gc::OpenTelemetryTracingOption>(enable_tracing);
 }
 
@@ -186,7 +189,12 @@ auto make_json(boost::program_options::variables_map const& vm) {
 
 auto grpc_options(boost::program_options::variables_map const& vm,
                   std::string prefix, std::string_view endpoint) {
-  auto opts = options(vm).set<gc::EndpointOption>(std::string(endpoint));
+  grpc::ChannelArguments args;
+  args.SetInt(GRPC_ARG_MAX_CONCURRENT_STREAMS,
+              vm["max-concurrent-streams"].as<int>());
+  auto opts = options(vm)
+                  .set<gc::EndpointOption>(std::string(endpoint))
+                  .set<gc::GrpcChannelArgumentsNativeOption>(std::move(args));
   auto const l = vm.find(prefix + "channels");
   if (l != vm.end()) {
     opts.set<gc::GrpcNumChannelsOption>(l->second.as<int>());

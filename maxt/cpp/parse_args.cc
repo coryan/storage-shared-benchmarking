@@ -72,6 +72,17 @@ export boost::program_options::variables_map parse_args(int argc,
       //
       ("runners", po::value<int>()->default_value(1),
        "the number of runners to run in parallel.")
+      //
+      ("upload-stall-rate-MiB", po::value<int>()->default_value(10),
+       "minimum rate (in MiB/s) for uploads")  //
+      ("download-stall-rate-MiB", po::value<int>()->default_value(10),
+       "minimum rate (in MiB/s) for downloads")  //
+      //
+      ("http-version", po::value<std::string>()->default_value("1.1"),
+       "HTTP version (1.0, 1.1, or 2) used for JSON benchmarks")  //
+      ("max-concurrent-stream", po::value<int>()->default_value(4),
+       "Maximum number of concurrent streams, only benefits gRPC at the "
+       "moment")
       // gRPC configuration options
       ("cfe-thread-pool", po::value<int>(), "CFE background thread pool.")  //
       ("cfe-channels", po::value<int>(), "the number of CFE channels.")     //
