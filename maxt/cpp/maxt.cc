@@ -216,15 +216,12 @@ auto make_dp(boost::program_options::variables_map const& vm) {
 
 auto async_options(boost::program_options::variables_map const& vm,
                    std::string prefix, std::string_view endpoint) {
-  auto opts = options(vm).set<gc::EndpointOption>(std::string(endpoint));
+  auto opts = grpc_options(vm, prefix, endpoint);
   auto l = vm.find(prefix + "thread-pool");
   if (l != vm.end()) {
     opts.set<gc::GrpcBackgroundThreadPoolSizeOption>(l->second.as<int>());
   }
-  l = vm.find(prefix + "channels");
-  if (l != vm.end()) {
-    opts.set<gc::GrpcNumChannelsOption>(l->second.as<int>());
-  }
+  opts.set<gc::OpenTelemetryTracingOption>(false);
   return opts;
 }
 
