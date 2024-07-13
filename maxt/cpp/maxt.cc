@@ -180,6 +180,8 @@ auto options(boost::program_options::variables_map const& vm) {
       .set<gc::storage::UploadBufferSizeOption>(256 * kKiB)
       .set<gc::storage_experimental::HttpVersionOption>(
           vm["http-version"].as<std::string>())
+      .set<gc::storage::BackoffPolicyOption>(
+          gc::storage::ExponentialBackoffPolicy(500ms, 8s, 2.0).clone())
       .set<gc::OpenTelemetryTracingOption>(enable_tracing);
 }
 
