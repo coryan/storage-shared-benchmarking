@@ -284,18 +284,17 @@ std::unique_ptr<opentelemetry::metrics::MeterProvider> make_meter_provider(
       opentelemetry::sdk::metrics::PeriodicExportingMetricReaderFactory::Create(
           std::move(exporter), reader_options);
 
-  auto provider = opentelemetry::sdk::metrics::MeterProviderFactory::Create(
-      std::make_unique<opentelemetry::sdk::metrics::ViewRegistry>(),
-      make_resource(instance));
-  auto& p = dynamic_cast<opentelemetry::sdk::metrics::MeterProvider&>(
-      *provider.get());
-  p.AddMetricReader(reader);
+  auto provider =
+      std::make_unique<opentelemetry::sdk::metrics::MeterProvider>(
+          std::make_unique<opentelemetry::sdk::metrics::ViewRegistry>(),
+          make_resource(instance));
+  provider->AddMetricReader(reader);
 
-  add_histogram_view(p, kLatencyHistogramName, kLatencyDescription,
+  add_histogram_view(*provider, kLatencyHistogramName, kLatencyDescription,
                      kLatencyHistogramUnit,
                      make_latency_histogram_boundaries());
 
-  return provider;
+  return std::unique_ptr<opentelemetry::metrics::MeterProvider>(std::move(provider));
 }
 
 std::shared_ptr<opentelemetry::trace::TracerProvider> make_tracer_provider(
