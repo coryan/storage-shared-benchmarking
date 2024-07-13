@@ -91,7 +91,7 @@ RUN curl -fsSL https://github.com/grpc/grpc/archive/v1.64.2.tar.gz | \
     rm -fr .build
 
 WORKDIR /var/tmp/build/google-cloud-cpp
-RUN curl -fsSL https://github.com/coryan/google-cloud-cpp/archive/d26af2ebc546c8087bdcd30d25a00de623bdc77c.tar.gz | \
+RUN curl -fsSL https://github.com/coryan/google-cloud-cpp/archive/f6b98cbfa338523075b482a98aa383968ddb0b16.tar.gz | \
     tar -xzf - --strip-components=1 && \
     cmake \
       -G Ninja -S . -B .build \
