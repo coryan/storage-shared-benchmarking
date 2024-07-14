@@ -199,12 +199,14 @@ auto make_json(boost::program_options::variables_map const& vm) {
 auto grpc_options(boost::program_options::variables_map const& vm,
                   std::string prefix, std::string_view endpoint) {
   grpc::ChannelArguments args;
-  args.SetInt(GRPC_ARG_MAX_CONCURRENT_STREAMS,
-              vm["max-concurrent-streams"].as<int>());
+  auto l = vm.find("max-concurrent-streams");
+  if (l != vm.end()) {
+    args.SetInt(GRPC_ARG_MAX_CONCURRENT_STREAMS, l->second.as<int>());
+  }
   auto opts = options(vm)
                   .set<gc::EndpointOption>(std::string(endpoint))
                   .set<gc::GrpcChannelArgumentsNativeOption>(std::move(args));
-  auto const l = vm.find(prefix + "channels");
+  l = vm.find(prefix + "channels");
   if (l != vm.end()) {
     opts.set<gc::GrpcNumChannelsOption>(l->second.as<int>());
   }
