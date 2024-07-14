@@ -44,7 +44,11 @@ export boost::program_options::variables_map parse_args(int argc,
       ("iterations", po::value<int>()->default_value(kDefaultIterations),
        "the number of iterations before exiting the test")  //
       // Create enough workers to keep the available CPUs busy rea
-      ("worker-counts",
+      ("read-worker-counts",
+       po::value<std::vector<int>>()->multitoken()->default_value(
+           {cores, 2 * cores}, std::format("[ {}, {} ]", cores, 2 * cores)),
+       "the object sizes used in the benchmark.")
+      ("write-worker-counts",
        po::value<std::vector<int>>()->multitoken()->default_value(
            {cores, 2 * cores}, std::format("[ {}, {} ]", cores, 2 * cores)),
        "the object sizes used in the benchmark.")

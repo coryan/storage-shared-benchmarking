@@ -107,17 +107,23 @@ void run(config cfg, metrics mts, named_experiments experiments) {
 
   for (int i = 0; i != cfg.iterations; ++i) {
     auto const [experiment, runner] = pick_one(generator, experiments);
+    auto const read_worker_count = pick_one(generator, cfg.read_worker_counts);
+    auto const write_worker_count =
+        pick_one(generator, cfg.write_worker_counts);
 
     auto const iteration = iteration_config{
         .experiment = std::move(experiment),
         .object_size = pick_one(generator, cfg.object_sizes),
         .object_count = pick_one(generator, cfg.object_counts),
-        .worker_count = pick_one(generator, cfg.worker_counts),
+        .worker_count = read_worker_count,
         .repeated_read_count = pick_one(generator, cfg.repeated_read_counts),
     };
 
     // Run the upload step in its own scope
     auto const objects = [&] {
+      auto write_iteration = iteration;
+      write_iteration.worker_count = write_worker_count;
+
       auto attributes = make_common_attributes(cfg, iteration, "UPLOAD");
       auto span =
           tracer->StartSpan("ssb::maxt::upload",
@@ -280,7 +286,8 @@ auto make_config(boost::program_options::variables_map const& vm) {
       .region = maxt_internal::discover_region(),
       .iterations = vm["iterations"].as<int>(),
       .object_sizes = vm["object-sizes"].as<std::vector<std::int64_t>>(),
-      .worker_counts = vm["worker-counts"].as<std::vector<int>>(),
+      .read_worker_counts = vm["read-worker-counts"].as<std::vector<int>>(),
+      .write_worker_counts = vm["write-worker-counts"].as<std::vector<int>>(),
       .object_counts = vm["object-counts"].as<std::vector<int>>(),
       .repeated_read_counts = vm["repeated-read-counts"].as<std::vector<int>>(),
       .ssb_version = SSB_VERSION,

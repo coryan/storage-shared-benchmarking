@@ -51,29 +51,30 @@ int main(int argc, char* argv[]) try {
   // build flags ourselves.
   namespace gci = ::google::cloud::internal;
 
-  std::cout << "## Starting continuous GCS C++ SDK benchmark"              //
-            << "\n# bucket: " << cfg.bucket_name                           //
-            << "\n# deployment: " << cfg.deployment                        //
-            << "\n# instance: " << cfg.instance                            //
-            << "\n# region: " << cfg.region                                //
-            << "\n# iterations: " << cfg.iterations                        //
-            << "\n# object-sizes: " << join(cfg.object_sizes)              //
-            << "\n# worker-counts: " << join(cfg.worker_counts)            //
-            << "\n# object-counts: " << join(cfg.object_counts)            //
-            << "\n# repeated-read-counts-counts: "                         //
-            << join(cfg.repeated_read_counts)                              //
-            << "\n# experiments: "                                         //
-            << join(vm["experiments"].as<std::vector<std::string>>())      //
-            << "\n# Version: " << cfg.ssb_version                          //
-            << "\n# C++ SDK version: " << cfg.sdk_version                  //
-            << "\n# gRPC version: " << cfg.grpc_version                    //
-            << "\n# Protobuf version: " << cfg.protobuf_version            //
-            << "\n# C++ SDK Compiler: " << gci::CompilerId()               //
-            << "\n# C++ SDK Compiler Version: " << gci::CompilerVersion()  //
-            << "\n# C++ SDK Compiler Flags: " << gci::compiler_flags()     //
-            << "\n# project-id: " << vm["project-id"].as<std::string>()    //
-            << "\n# tracing-rate: " << vm["tracing-rate"].as<double>()     //
-            << std::endl;                                                  //
+  std::cout << "## Starting continuous GCS C++ SDK benchmark"                //
+            << "\n# bucket: " << cfg.bucket_name                             //
+            << "\n# deployment: " << cfg.deployment                          //
+            << "\n# instance: " << cfg.instance                              //
+            << "\n# region: " << cfg.region                                  //
+            << "\n# iterations: " << cfg.iterations                          //
+            << "\n# object-sizes: " << join(cfg.object_sizes)                //
+            << "\n# read-worker-counts: " << join(cfg.read_worker_counts)    //
+            << "\n# write-worker-counts: " << join(cfg.write_worker_counts)  //
+            << "\n# object-counts: " << join(cfg.object_counts)              //
+            << "\n# repeated-read-counts-counts: "                           //
+            << join(cfg.repeated_read_counts)                                //
+            << "\n# experiments: "                                           //
+            << join(vm["experiments"].as<std::vector<std::string>>())        //
+            << "\n# Version: " << cfg.ssb_version                            //
+            << "\n# C++ SDK version: " << cfg.sdk_version                    //
+            << "\n# gRPC version: " << cfg.grpc_version                      //
+            << "\n# Protobuf version: " << cfg.protobuf_version              //
+            << "\n# C++ SDK Compiler: " << gci::CompilerId()                 //
+            << "\n# C++ SDK Compiler Version: " << gci::CompilerVersion()    //
+            << "\n# C++ SDK Compiler Flags: " << gci::compiler_flags()       //
+            << "\n# project-id: " << vm["project-id"].as<std::string>()      //
+            << "\n# tracing-rate: " << vm["tracing-rate"].as<double>()       //
+            << std::endl;                                                    //
 
   auto const mts = maxt::make_metrics(vm, cfg);
   std::vector<std::jthread> runners;

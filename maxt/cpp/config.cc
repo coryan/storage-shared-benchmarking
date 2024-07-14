@@ -28,7 +28,8 @@ struct config {
   std::string region;
   int iterations;
   std::vector<std::int64_t> object_sizes;
-  std::vector<int> worker_counts;
+  std::vector<int> read_worker_counts;
+  std::vector<int> write_worker_counts;
   std::vector<int> object_counts;
   std::vector<int> repeated_read_counts;
   std::string ssb_version;
