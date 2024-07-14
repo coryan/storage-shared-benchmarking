@@ -111,7 +111,7 @@ void run(config cfg, metrics mts, named_experiments experiments) {
     auto const write_worker_count =
         pick_one(generator, cfg.write_worker_counts);
 
-    auto const iteration = iteration_config{
+    auto const base_iteration = iteration_config{
         .experiment = std::move(experiment),
         .object_size = pick_one(generator, cfg.object_sizes),
         .object_count = pick_one(generator, cfg.object_counts),
@@ -121,8 +121,8 @@ void run(config cfg, metrics mts, named_experiments experiments) {
 
     // Run the upload step in its own scope
     auto const objects = [&] {
-      auto write_iteration = iteration;
-      write_iteration.worker_count = write_worker_count;
+      auto iteration = base_iteration;
+      iteration.worker_count = write_worker_count;
 
       auto attributes = make_common_attributes(cfg, iteration, "UPLOAD");
       auto span =
@@ -140,6 +140,7 @@ void run(config cfg, metrics mts, named_experiments experiments) {
       return objects;
     }();
 
+    auto const iteration = base_iteration;
     {
       auto const attributes =
           make_common_attributes(cfg, iteration, "DOWNLOAD");
